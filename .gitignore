@@ -7,5 +7,6 @@ mlruns/
 *.h5
 *.tflite
 venv/
+.venv/
 .vscode/
 *.log

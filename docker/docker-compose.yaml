@@ -34,13 +34,28 @@ services:
       timeout: 5s
       retries: 5
 
+  minio-setup:
+      image: minio/mc:latest
+      depends_on:
+        minio:
+          condition: service_healthy
+      entrypoint: >
+        /bin/sh -c "
+        mc alias set myminio http://minio:9000 minioadmin minioadmin;
+        mc mb myminio/mlflow-artifacts --ignore-existing;
+        mc anonymous set public myminio/mlflow-artifacts;
+        exit 0;
+        "
+
   mlflow:
-    image: ghcr.io/mlflow/mlflow:v2.9.2
+    build:
+      context: .
+      dockerfile: Dockerfile.mlflow
     depends_on:
       postgres:
         condition: service_healthy
-      minio:
-        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
     environment:
       MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: minioadmin
