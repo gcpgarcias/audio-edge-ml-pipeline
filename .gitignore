@@ -1,0 +1,11 @@
+data/
+*.pyc
+__pycache__/
+.DS_Store
+.env
+mlruns/
+*.h5
+*.tflite
+venv/
+.vscode/
+*.log
