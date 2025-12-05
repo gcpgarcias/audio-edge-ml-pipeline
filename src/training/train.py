@@ -1,3 +1,49 @@
+import tensorflow as tf
+from tensorflow import keras
+from pathlib import Path
+import mlflow
+import mlflow.tensorflow
+from datetime import datetime
+import time
+import argparse
+import json
+import logging
+
+from dataset import SpectrogramDataset
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def create_cnn_model(input_shape, num_classes, filters=[16, 32, 64], dropout_rate=0.3):
+    """Create a simple CNN for audio classification."""
+    model = keras.Sequential([
+        # First conv block
+        keras.layers.Conv2D(filters[0], (3, 3), activation='relu', input_shape=input_shape, padding='same'),
+        keras.layers.BatchNormalization(),
+        keras.layers.MaxPooling2D((2, 2)),
+        keras.layers.Dropout(dropout_rate),
+        
+        # Second conv block
+        keras.layers.Conv2D(filters[1], (3, 3), activation='relu', padding='same'),
+        keras.layers.BatchNormalization(),
+        keras.layers.MaxPooling2D((2, 2)),
+        keras.layers.Dropout(dropout_rate),
+        
+        # Third conv block
+        keras.layers.Conv2D(filters[2], (3, 3), activation='relu', padding='same'),
+        keras.layers.BatchNormalization(),
+        keras.layers.MaxPooling2D((2, 2)),
+        keras.layers.Dropout(dropout_rate),
+        
+        # Classifier
+        keras.layers.GlobalAveragePooling2D(),
+        keras.layers.Dense(128, activation='relu'),
+        keras.layers.Dropout(dropout_rate),
+        keras.layers.Dense(num_classes, activation='softmax')
+    ])
+    
+    return model
+
 def train_model(
     data_dir: str,
     epochs: int = 30,
@@ -209,3 +255,27 @@ def train_model(
         logger.info("="*50)
         
         return model, history, class_names
+
+def main():
+    parser = argparse.ArgumentParser(description="Train audio classification model")
+    parser.add_argument("--data-dir", type=str, default="data/processed/spectrograms")
+    parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument("--experiment-name", type=str, default="audio-classification")
+    
+    args = parser.parse_args()
+    
+    model, history, class_names = train_model(
+        data_dir=args.data_dir,
+        epochs=args.epochs,
+        batch_size=args.batch_size,
+        learning_rate=args.learning_rate,
+        experiment_name=args.experiment_name
+    )
+    
+    print("\nTraining complete!")
+    print(f"Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
+
+if __name__ == "__main__":
+    main()

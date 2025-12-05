@@ -1,5 +1,6 @@
-FROM ghcr.io/mlflow/mlflow:v2.9.2
+FROM python:3.11-slim
 
 # Instala psycopg2 e boto3 (para MinIO/S3)
-RUN pip install --no-cache-dir psycopg2-binary boto3
+RUN pip install --no-cache-dir mlflow==3.6.0 psycopg2-binary boto3
 
+EXPOSE 5000

@@ -9,4 +9,5 @@ mlruns/
 venv/
 .venv/
 .vscode/
+logs/
 *.log
