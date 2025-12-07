@@ -21,21 +21,41 @@ class SpectrogramDataset:
         
         spectrograms = []
         labels = []
+
+        logger.info(f"Found {len(metadata_files)} metadata files")
         
         for metadata_path in metadata_files:
             with open(metadata_path) as f:
                 metadata = json.load(f)
             
-            processed_path = Path(metadata.get("processed_path"))
+            processed_path = Path(metadata.get("processed_path", ""))
+            
             if not processed_path.exists():
+                file_id = metadata.get("file_id", metadata_path.stem)
+                processed_path = self.data_dir / f"{file_id}.npy"
+            
+            if not processed_path.exists():
+                logger.warning(f"Skipping {metadata_path.name}: processed file not found")
+                continue
+
+            label = metadata["label"]
+            if not label:
+                logger.warning(f"Skipping {metadata_path.name}: no label")
                 continue
             
-            label = metadata["label"]
-            
             # Load spectrogram
-            spectrogram = np.load(processed_path)
-            spectrograms.append(spectrogram)
-            labels.append(label)
+            try:
+                spectrogram = np.load(processed_path)
+                spectrograms.append(spectrogram)
+                labels.append(label)
+            except Exception as e:
+                logger.warning(f"Failed to load {processed_path}: {e}")
+                continue
+
+        logger.info(f"Successfully loaded {len(spectrograms)} samples")
+
+        if len(spectrograms) == 0:
+            raise ValueError("No valid spectrograms loaded!")
         
         # Create class mapping
         unique_labels = sorted(set(labels))
@@ -43,6 +63,13 @@ class SpectrogramDataset:
         self.num_classes = len(unique_labels)
         label_to_idx = {label: idx for idx, label in enumerate(unique_labels)}
         
+        # Log class distribution
+        from collections import Counter
+        label_counts = Counter(labels)
+        logger.info("Label distribution:")
+        for label, count in label_counts.most_common():
+            logger.info(f"  {label}: {count}")
+
         # Convert to arrays
         X = np.array(spectrograms)
         y = np.array([label_to_idx[label] for label in labels])

@@ -14,30 +14,22 @@ from dataset import SpectrogramDataset
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def create_cnn_model(input_shape, num_classes, filters=[16, 32, 64], dropout_rate=0.3):
-    """Create a simple CNN for audio classification."""
+def create_cnn_model(input_shape, num_classes, filters=[16, 32], dropout_rate=0.3):
+    """Create a lightweight CNN that actually works."""
     model = keras.Sequential([
-        # First conv block
+        # First conv block - NO BatchNorm
         keras.layers.Conv2D(filters[0], (3, 3), activation='relu', input_shape=input_shape, padding='same'),
-        keras.layers.BatchNormalization(),
         keras.layers.MaxPooling2D((2, 2)),
         keras.layers.Dropout(dropout_rate),
         
         # Second conv block
         keras.layers.Conv2D(filters[1], (3, 3), activation='relu', padding='same'),
-        keras.layers.BatchNormalization(),
-        keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.Dropout(dropout_rate),
-        
-        # Third conv block
-        keras.layers.Conv2D(filters[2], (3, 3), activation='relu', padding='same'),
-        keras.layers.BatchNormalization(),
         keras.layers.MaxPooling2D((2, 2)),
         keras.layers.Dropout(dropout_rate),
         
         # Classifier
-        keras.layers.GlobalAveragePooling2D(),
-        keras.layers.Dense(128, activation='relu'),
+        keras.layers.Flatten(),
+        keras.layers.Dense(64, activation='relu'),
         keras.layers.Dropout(dropout_rate),
         keras.layers.Dense(num_classes, activation='softmax')
     ])
@@ -100,7 +92,7 @@ def train_model(
         # Create model
         logger.info("Creating model...")
         model_creation_start = time.time()
-        model = create_cnn_model(input_shape, len(class_names), filters, dropout_rate)
+        model = create_cnn_model(input_shape, len(class_names), filters=[8, 16], dropout_rate=0.5)
         model_creation_time = time.time() - model_creation_start
         
         mlflow.log_metric("model_creation_time_seconds", model_creation_time)
@@ -148,13 +140,13 @@ def train_model(
             timing_callback,
             keras.callbacks.EarlyStopping(
                 monitor='val_loss',
-                patience=5,
+                patience=10,
                 restore_best_weights=True
             ),
             keras.callbacks.ReduceLROnPlateau(
                 monitor='val_loss',
                 factor=0.5,
-                patience=3,
+                patience=5,
                 min_lr=1e-6
             ),
             keras.callbacks.TensorBoard(
