@@ -1,115 +1,124 @@
-import librosa
-import numpy as np
-from pathlib import Path
+"""
+Ingestion-layer audio preprocessor.
+
+Converts raw audio files (uploaded via the ingestion API) to log-mel
+spectrograms and persists them alongside their JSON metadata.
+
+This module is kept intentionally thin: the actual feature computation is
+delegated to :class:`~src.preprocessing.feature_extraction.audio.deep.AudioMelSpectrogram`
+so that parameters stay consistent across the ingestion path and the
+training pipeline.
+"""
+
 import json
-from typing import Tuple, Dict
 import logging
+from pathlib import Path
+from typing import Dict
+
+import numpy as np
+
+from src.preprocessing.feature_extraction.audio.deep import AudioMelSpectrogram
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
 class AudioPreprocessor:
+    """Batch-process ingested audio files into stored mel-spectrograms.
+
+    Parameters mirror those of :class:`AudioMelSpectrogram` so that the
+    representation written to disk is identical to what the training
+    pipeline reads back via the feature extraction layer.
+    """
+
     def __init__(
         self,
-        sample_rate: int = 16000,
-        n_mels: int = 40,
-        n_fft: int = 512,
-        hop_length: int = 160,
-        duration: float = 1.0
-    ):
-        self.sample_rate = sample_rate
-        self.n_mels = n_mels
-        self.n_fft = n_fft
-        self.hop_length = hop_length
-        self.duration = duration
-        self.target_length = int(sample_rate * duration)
-    
-    def load_and_preprocess(self, audio_path: Path) -> np.ndarray:
-        """Load audio file and convert to log mel spectrogram."""
-        # Load audio
-        audio, sr = librosa.load(audio_path, sr=self.sample_rate, duration=self.duration)
-        
-        # Pad or trim to target length
-        if len(audio) < self.target_length:
-            audio = np.pad(audio, (0, self.target_length - len(audio)))
-        else:
-            audio = audio[:self.target_length]
-        
-        # Compute mel spectrogram
-        mel_spec = librosa.feature.melspectrogram(
-            y=audio,
-            sr=self.sample_rate,
-            n_mels=self.n_mels,
-            n_fft=self.n_fft,
-            hop_length=self.hop_length
+        sample_rate: int   = 16000,
+        n_mels:      int   = 40,
+        n_fft:       int   = 512,
+        hop_length:  int   = 160,
+        duration:    float = 1.0,
+    ) -> None:
+        self._extractor = AudioMelSpectrogram(
+            sample_rate=sample_rate,
+            n_mels=n_mels,
+            n_fft=n_fft,
+            hop_length=hop_length,
+            duration=duration,
         )
-        
-        # Convert to log scale
-        log_mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
-        
-        # Normalize to [0, 1]
-        log_mel_spec = (log_mel_spec - log_mel_spec.min()) / (log_mel_spec.max() - log_mel_spec.min() + 1e-8)
-        
-        return log_mel_spec
-    
+
+    # Preserve the original public method name used by the ingestion API.
+    def load_and_preprocess(self, audio_path: Path) -> np.ndarray:
+        """Load *audio_path* and return a normalized log-mel spectrogram.
+
+        Returns
+        -------
+        np.ndarray
+            Shape ``(n_mels, time_frames)``, dtype float32, values in [0, 1].
+        """
+        return self._extractor.extract(audio_path)
+
     def process_dataset(self, input_dir: Path, output_dir: Path) -> Dict[str, int]:
-        """Process all audio files in directory structure."""
-        input_dir = Path(input_dir)
+        """Process all JSON-annotated audio files in *input_dir*.
+
+        Reads each ``*.json`` metadata file, extracts features from the
+        referenced audio, saves a ``.npy`` file, and updates the metadata.
+
+        Returns
+        -------
+        dict
+            ``{"processed": N, "failed": M}``
+        """
+        input_dir  = Path(input_dir)
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         stats = {"processed": 0, "failed": 0}
-        
-        # Find all audio files with metadata
-        metadata_files = list(input_dir.glob("*.json"))
-        
-        for metadata_path in metadata_files:
+
+        for metadata_path in input_dir.glob("*.json"):
             try:
                 with open(metadata_path) as f:
                     metadata = json.load(f)
-                
+
                 audio_path = Path(metadata["path"])
                 if not audio_path.exists():
-                    logger.warning(f"Audio file not found: {audio_path}")
+                    logger.warning("Audio file not found: %s", audio_path)
                     stats["failed"] += 1
                     continue
-                
-                # Process audio
-                log_mel_spec = self.load_and_preprocess(audio_path)
-                
-                # Save processed features
-                file_id = metadata["file_id"]
+
+                spec = self.load_and_preprocess(audio_path)
+
+                file_id     = metadata["file_id"]
                 output_path = output_dir / f"{file_id}.npy"
-                np.save(output_path, log_mel_spec)
-                
-                # Update metadata with processed path
-                metadata["processed_path"] = str(output_path)
-                metadata["spectrogram_shape"] = log_mel_spec.shape
-                
-                output_metadata_path = output_dir / f"{file_id}.json"
-                with open(output_metadata_path, "w") as f:
+                np.save(output_path, spec)
+
+                metadata["processed_path"]   = str(output_path)
+                metadata["spectrogram_shape"] = list(spec.shape)
+
+                out_meta = output_dir / f"{file_id}.json"
+                with open(out_meta, "w") as f:
                     json.dump(metadata, f, indent=2)
-                
+
                 stats["processed"] += 1
-                
                 if stats["processed"] % 50 == 0:
-                    logger.info(f"Processed {stats['processed']} files...")
-                
-            except Exception as e:
-                logger.error(f"Error processing {metadata_path}: {e}")
+                    logger.info("Processed %d files…", stats["processed"])
+
+            except Exception as exc:
+                logger.error("Error processing %s: %s", metadata_path, exc)
                 stats["failed"] += 1
-        
-        logger.info(f"Processing complete: {stats}")
+
+        logger.info("Processing complete: %s", stats)
         return stats
 
-def main():
+
+def main() -> None:
     preprocessor = AudioPreprocessor()
-    
-    input_dir = Path("data/raw/uploads")
-    output_dir = Path("data/processed/spectrograms")
-    
-    stats = preprocessor.process_dataset(input_dir, output_dir)
+    stats = preprocessor.process_dataset(
+        input_dir=Path("data/raw/uploads"),
+        output_dir=Path("data/processed/spectrograms"),
+    )
     print(f"Preprocessing complete: {stats}")
+
 
 if __name__ == "__main__":
     main()
