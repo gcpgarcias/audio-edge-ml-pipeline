@@ -236,8 +236,13 @@ def _build_arg_parser():
     p.add_argument(
         "--loader",
         default="birdeep",
-        choices=["birdeep"],
+        choices=["birdeep", "birdeep_image", "image_folder"],
         help="Dataset loader to use.",
+    )
+    p.add_argument(
+        "--image-folder",
+        default=None,
+        help="Root path for image_folder loader.",
     )
     p.add_argument(
         "--split",
@@ -265,15 +270,22 @@ def _build_arg_parser():
 
 
 def main() -> None:
-    import src.preprocessing.feature_extraction  # noqa: F401 – triggers registration
-
-    from src.preprocessing.dataset_loaders import BIRDeepLoader
-    from src.preprocessing.feature_extraction import get
+    from src.preprocessing.dataset_loaders import (
+        BIRDeepImageLoader,
+        BIRDeepLoader,
+        ImageFolderLoader,
+    )
+    from src.preprocessing.feature_extraction import get  # noqa: F401 – triggers registration
 
     args = _build_arg_parser().parse_args()
 
     if args.loader == "birdeep":
         loader = BIRDeepLoader(args.dataset, split=args.split)
+    elif args.loader == "birdeep_image":
+        loader = BIRDeepImageLoader(args.dataset, split=args.split)
+    elif args.loader == "image_folder":
+        root = args.image_folder or args.dataset
+        loader = ImageFolderLoader(root, split=args.split)
     else:
         raise ValueError(f"Unknown loader: {args.loader!r}")
 

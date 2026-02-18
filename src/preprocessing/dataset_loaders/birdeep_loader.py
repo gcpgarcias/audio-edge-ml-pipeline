@@ -1,16 +1,23 @@
 """
-BIRDeep Audio Annotations dataset loader.
+BIRDeep Audio Annotations dataset loaders.
 
-Reads the pre-split CSV files that ship with the dataset
+Two loaders are provided for the BIRDeep_AudioAnnotations dataset:
+
+``BIRDeepLoader``
+    Yields ``(wav_path, species_label, metadata)`` tuples.  Metadata carries
+    ``start_time`` / ``end_time`` so that feature extractors can slice the
+    relevant segment from the 1-minute recording.
+
+``BIRDeepImageLoader``
+    Yields ``(png_path, species_label, metadata)`` tuples where each PNG is
+    the full 1-minute spectrogram image.  Metadata carries a ``bbox_norm``
+    key — a normalised YOLOv8 bounding box ``[x_center, y_center, w, h]``
+    that image feature extractors use to crop the bird-call region before
+    computing features.
+
+Both loaders read the same pre-split CSV files
 (``train_file.csv``, ``test_file.csv``, ``validation_file.csv``,
-``dataset.csv``) and yields one entry per annotated bird-call segment:
-
-    (audio_path, species_label, metadata_dict)
-
-Each annotation describes a single bird vocalisation detected within a
-one-minute WAV recording.  The metadata dict carries all per-annotation
-fields so that feature extractors can use segment boundaries, frequency
-range, recorder site, etc.
+``dataset.csv``) and produce one sample per annotation row.
 
 Dataset layout (expected)
 -------------------------
@@ -210,4 +217,173 @@ class BIRDeepLoader(BaseDatasetLoader):
                 meta[freq_col] = float(row[freq_col])
         if "bbox" in row and pd.notna(row["bbox"]):
             meta["bbox"] = row["bbox"]
+        return meta
+
+
+# ---------------------------------------------------------------------------
+# Image loader
+# ---------------------------------------------------------------------------
+
+class BIRDeepImageLoader(BaseDatasetLoader):
+    """Iterate over annotated spectrogram image patches in the BIRDeep dataset.
+
+    Each annotation row in the CSV corresponds to one bird-call detection.
+    The loader yields the full PNG spectrogram path together with a
+    ``bbox_norm`` metadata key — a normalised YOLOv8 bounding box
+    ``[x_center, y_center, w, h]`` — that image feature extractors use to
+    crop the relevant patch before computing features.
+
+    The cropping strategy mirrors how :class:`BIRDeepLoader` uses
+    ``start_time`` / ``end_time`` on audio files: the full image is yielded
+    and the extractor performs the crop, keeping the loader stateless with
+    respect to image dimensions.
+
+    Parameters
+    ----------
+    dataset_root:
+        Path to the BIRDeep_AudioAnnotations directory.
+    split:
+        One of ``"train"``, ``"test"``, ``"validation"``, or ``"all"``.
+    image_subdir:
+        Sub-directory that contains the PNG spectrograms (default
+        ``"images"``).
+    include_augmented:
+        Whether to include augmented recordings.
+    min_bbox_area:
+        Skip annotations whose normalised bounding box area (w × h) is
+        smaller than this value.  Guards against degenerate detections.
+    species_filter:
+        If given, only annotations for the listed species are yielded.
+    """
+
+    def __init__(
+        self,
+        dataset_root:      Path | str,
+        split:             str   = "train",
+        image_subdir:      str   = "images",
+        include_augmented: bool  = False,
+        min_bbox_area:     float = 1e-5,
+        species_filter:    Optional[set[str]] = None,
+    ) -> None:
+        if split not in _SPLIT_FILES:
+            raise ValueError(
+                f"split must be one of {list(_SPLIT_FILES)}, got {split!r}."
+            )
+
+        self.dataset_root      = Path(dataset_root)
+        self.image_dir         = self.dataset_root / image_subdir
+        self.split             = split
+        self.include_augmented = include_augmented
+        self.min_bbox_area     = min_bbox_area
+        self.species_filter    = species_filter
+
+        csv_path = self.dataset_root / _SPLIT_FILES[split]
+        if not csv_path.exists():
+            raise FileNotFoundError(
+                f"CSV file not found: {csv_path}. "
+                "Ensure dataset_root points to BIRDeep_AudioAnnotations/."
+            )
+
+        self._df = self._load_and_filter(csv_path)
+        logger.info(
+            "BIRDeepImageLoader [%s] – %d annotations across %d unique images.",
+            split,
+            len(self._df),
+            self._df["path"].nunique(),
+        )
+
+    # ------------------------------------------------------------------
+    # BaseDatasetLoader interface
+    # ------------------------------------------------------------------
+
+    def __len__(self) -> int:
+        return len(self._df)
+
+    def __iter__(self) -> Iterator[tuple[Path, Optional[str], dict]]:
+        for _, row in self._df.iterrows():
+            # Derive image path from audio path by swapping extension
+            img_rel = Path(row["path"]).with_suffix(".PNG")
+            img_path = self.image_dir / img_rel
+            if not img_path.exists():
+                logger.warning("Image not found, skipping: %s", img_path)
+                continue
+
+            label = str(row["specie"])
+            meta  = self._row_to_meta(row)
+            yield img_path, label, meta
+
+    # ------------------------------------------------------------------
+    # Convenience helpers
+    # ------------------------------------------------------------------
+
+    @property
+    def species(self) -> list[str]:
+        return sorted(self._df["specie"].unique().tolist())
+
+    @property
+    def n_species(self) -> int:
+        return len(self.species)
+
+    def species_counts(self) -> "pd.Series":
+        return self._df["specie"].value_counts()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _load_and_filter(self, csv_path: Path) -> "pd.DataFrame":
+        df = pd.read_csv(csv_path)
+        df.columns = df.columns.str.strip()
+
+        # Only rows with a valid bbox are useful for the image loader
+        mandatory = ["path", "specie", "bbox"]
+        df = df.dropna(subset=mandatory)
+
+        if not self.include_augmented:
+            df = df[~df["path"].str.startswith("Data Augmentation")]
+
+        if self.species_filter is not None:
+            df = df[df["specie"].isin(self.species_filter)]
+
+        return df.reset_index(drop=True)
+
+    @staticmethod
+    def _parse_bbox(raw: str) -> Optional[list[float]]:
+        """Parse a CSV bbox string to ``[x_center, y_center, w, h]``.
+
+        The CSV stores bboxes as Python list literals, e.g.:
+        ``"[19, 0.213, 0.200, 0.011, 0.056]"``
+        The first element is the class ID (discarded here — class identity is
+        conveyed by the ``specie`` column).
+        """
+        import ast
+        try:
+            vals = ast.literal_eval(raw)
+            # vals = [class_id, x_center, y_center, w, h]
+            if len(vals) >= 5:
+                return [float(v) for v in vals[1:5]]
+        except Exception:
+            pass
+        return None
+
+    def _row_to_meta(self, row: "pd.Series") -> dict:
+        meta: dict = {
+            "recorder":  str(row.get("recorder", "")),
+            "date":      str(row.get("date", "")),
+            "time":      str(row.get("time", "")),
+            "annotator": str(row.get("annotator", "")),
+        }
+        for col in ("start_time", "end_time", "low_frequency", "high_frequency"):
+            if col in row and pd.notna(row[col]):
+                try:
+                    meta[col] = float(row[col])
+                except (ValueError, TypeError):
+                    pass
+
+        bbox_norm = self._parse_bbox(str(row.get("bbox", "")))
+        if bbox_norm is not None:
+            # Skip degenerate boxes
+            if bbox_norm[2] * bbox_norm[3] >= self.min_bbox_area:
+                meta["bbox_norm"] = bbox_norm
+
         return meta
