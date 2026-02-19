@@ -236,13 +236,32 @@ def _build_arg_parser():
     p.add_argument(
         "--loader",
         default="birdeep",
-        choices=["birdeep", "birdeep_image", "image_folder"],
+        choices=[
+            "birdeep", "birdeep_image", "image_folder",
+            "text_folder", "text_json", "text_csv",
+            "tabular",
+        ],
         help="Dataset loader to use.",
     )
     p.add_argument(
         "--image-folder",
         default=None,
         help="Root path for image_folder loader.",
+    )
+    p.add_argument(
+        "--text-folder",
+        default=None,
+        help="Root path for text_folder loader.",
+    )
+    p.add_argument(
+        "--label-col",
+        default=None,
+        help="Label column name (text_csv and tabular loaders).",
+    )
+    p.add_argument(
+        "--text-col",
+        default="text",
+        help="Text column name (text_csv loader).",
     )
     p.add_argument(
         "--split",
@@ -274,6 +293,10 @@ def main() -> None:
         BIRDeepImageLoader,
         BIRDeepLoader,
         ImageFolderLoader,
+        TabularLoader,
+        TextCSVLoader,
+        TextFolderLoader,
+        TextJSONLoader,
     )
     from src.preprocessing.feature_extraction import get  # noqa: F401 – triggers registration
 
@@ -286,6 +309,19 @@ def main() -> None:
     elif args.loader == "image_folder":
         root = args.image_folder or args.dataset
         loader = ImageFolderLoader(root, split=args.split)
+    elif args.loader == "text_folder":
+        root = args.text_folder or args.dataset
+        loader = TextFolderLoader(root, split=args.split)
+    elif args.loader == "text_json":
+        loader = TextJSONLoader(args.dataset)
+    elif args.loader == "text_csv":
+        loader = TextCSVLoader(
+            args.dataset,
+            text_col=args.text_col,
+            label_col=args.label_col,
+        )
+    elif args.loader == "tabular":
+        loader = TabularLoader(args.dataset, label_col=args.label_col)
     else:
         raise ValueError(f"Unknown loader: {args.loader!r}")
 

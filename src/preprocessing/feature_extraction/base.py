@@ -151,16 +151,20 @@ class BaseFeatureExtractor(ABC):
     modality:     str
 
     @abstractmethod
-    def extract(self, sample_path: Path, **kwargs) -> np.ndarray:
+    def extract(self, sample_path: Optional[Path], **kwargs) -> np.ndarray:
         """Extract features from a single sample.
 
         Parameters
         ----------
         sample_path:
-            Path to the raw sample file.
+            Path to the raw sample file, or *None* for in-memory samples
+            (e.g. individual rows from a tabular dataset, or text documents
+            stored inside *kwargs* by a JSON/CSV loader).
         **kwargs:
             Per-sample metadata forwarded from the dataset loader (e.g.
-            start_time, end_time for audio segment extraction).
+            ``start_time`` / ``end_time`` for audio, ``bbox_norm`` for image,
+            ``text`` for in-memory text documents, or column values for
+            tabular rows).
 
         Returns
         -------
@@ -235,14 +239,17 @@ class BaseDatasetLoader(ABC):
 
     Iterating over a loader yields ``(sample_path, label, metadata)`` tuples:
 
-    * ``sample_path`` – :class:`~pathlib.Path` to the raw file.
+    * ``sample_path`` – :class:`~pathlib.Path` to the raw file, or *None* for
+                        in-memory samples (tabular rows, JSON text documents).
     * ``label``       – string class label, or *None* for unlabelled samples.
     * ``metadata``    – arbitrary dict forwarded to the feature extractor as
-                        keyword arguments (e.g. ``start_time``, ``end_time``).
+                        keyword arguments (e.g. ``start_time`` / ``end_time``
+                        for audio, ``bbox_norm`` for image, ``text`` for
+                        in-memory text, or column key-value pairs for tabular).
     """
 
     @abstractmethod
-    def __iter__(self) -> Iterator[tuple[Path, Optional[str], dict]]:
+    def __iter__(self) -> Iterator[tuple[Optional[Path], Optional[str], dict]]:
         ...
 
     @abstractmethod

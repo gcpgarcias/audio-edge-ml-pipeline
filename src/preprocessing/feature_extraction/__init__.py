@@ -17,6 +17,14 @@ from .audio.deep import AudioCQT, AudioMelSpectrogram, AudioMFCCSequence, AudioW
 from .image.classical import ImageClassicalExtractor
 from .image.deep import ImageMobileNetV2, ImagePixels
 
+# Text extractors
+from .text.classical import TextBoWExtractor, TextCharNgramExtractor, TextTFIDFExtractor
+from .text.deep import TextBERTTokens, TextSentenceEmbedding
+
+# Tabular extractors
+from .tabular.classical import TabularClassicalExtractor
+from .tabular.deep import TabularPolynomialExtractor
+
 __all__ = [
     # Abstractions
     "BaseFeatureExtractor",
@@ -35,4 +43,13 @@ __all__ = [
     "ImageClassicalExtractor",
     "ImagePixels",
     "ImageMobileNetV2",
+    # Text
+    "TextTFIDFExtractor",
+    "TextBoWExtractor",
+    "TextCharNgramExtractor",
+    "TextSentenceEmbedding",
+    "TextBERTTokens",
+    # Tabular
+    "TabularClassicalExtractor",
+    "TabularPolynomialExtractor",
 ]
