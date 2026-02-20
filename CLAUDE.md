@@ -174,6 +174,18 @@ python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
 
 ## Pending Work
 
+### Stage 3 - Model training
+
+Needs refactoring to implement multiple ML models: from classical (SVM, LDA, PCA, Decision Tree, Random Forest, K-NN, K-Means) through deep learning (RNN, CNN, Transformers).
+
+### Stage 4 - Model evaluation
+
+Currently lives inside training.py, effectively compacting Stages 3 & 4 together. This is fine. Investigate whether MLFlow is still the best option or if some form of local storage is better than a dockerized container.
+
+### Stage 5 - Model selection
+
+Should read the necessary metrics from MLFlow to select the best model according to multiple parameters, respecting the end goal of optimizing and compiling to an embedded device with limited resources.
+
 ### Stage 10 — Model updating
 
 Not yet designed. Will need a feedback loop from the monitoring dashboard
