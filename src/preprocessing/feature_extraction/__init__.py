@@ -25,6 +25,10 @@ from .text.deep import TextBERTTokens, TextSentenceEmbedding
 from .tabular.classical import TabularClassicalExtractor
 from .tabular.deep import TabularPolynomialExtractor
 
+# Video extractors
+from .video.classical import VideoClassicalExtractor
+from .video.deep import VideoFrameSequence, VideoMobileNetV2Sequence
+
 __all__ = [
     # Abstractions
     "BaseFeatureExtractor",
@@ -52,4 +56,8 @@ __all__ = [
     # Tabular
     "TabularClassicalExtractor",
     "TabularPolynomialExtractor",
+    # Video
+    "VideoClassicalExtractor",
+    "VideoFrameSequence",
+    "VideoMobileNetV2Sequence",
 ]

@@ -1,0 +1,105 @@
+# Feature extraction pipeline — multi-run config
+#
+# Usage:
+#   python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
+#
+# Top-level fields are inherited by every experiment as defaults.
+# Any experiment can override them by setting the same key locally.
+#
+# Required per-experiment keys: extractor, loader
+# (may be supplied at the top level and inherited).
+
+dataset: data/raw/BIRDeep_AudioAnnotations
+split:   train
+
+# ── Experiments ────────────────────────────────────────────────────────────
+
+experiments:
+
+  # ── Audio ────────────────────────────────────────────────────────────────
+
+  - name:      birdeep_classical_train
+    extractor: audio_classical
+    loader:    birdeep
+    # output defaults to data/processed/birdeep_classical_train
+
+  - name:      birdeep_classical_test
+    extractor: audio_classical
+    loader:    birdeep
+    split:     test
+
+  - name:      birdeep_melspec_train
+    extractor: audio_mel_spec
+    loader:    birdeep
+
+  - name:      birdeep_mfcc_seq_train
+    extractor: audio_mfcc_seq
+    loader:    birdeep
+
+  # ── Image ─────────────────────────────────────────────────────────────────
+
+  - name:      birdeep_image_classical_train
+    extractor: image_classical
+    loader:    birdeep_image
+
+  - name:      birdeep_mobilenet_train
+    extractor: image_mobilenet_v2
+    loader:    birdeep_image
+
+  - name:      birdeep_mobilenet_val
+    extractor: image_mobilenet_v2
+    loader:    birdeep_image
+    split:     validation
+
+  # ── Audio (generic folder layout — adapt path to your data) ─────────────
+  # Uncomment and set audio_folder to the root of any class-per-subfolder
+  # audio dataset (ESC-50, UrbanSound8k, Google Speech Commands, etc.).
+  #
+  # - name:      audio_classical_custom
+  #   extractor: audio_classical
+  #   loader:    audio_folder
+  #   audio_folder: data/raw/my_audio_dataset   # overrides top-level dataset
+  #   split:     train
+  #
+  # - name:      audio_melspec_custom
+  #   extractor: audio_mel_spec
+  #   loader:    audio_folder
+  #   audio_folder: data/raw/my_audio_dataset
+
+  # ── Video (generic folder layout — adapt path to your data) ──────────────
+  # Uncomment and set video_folder to the root of your video dataset.
+  #
+  # - name:      video_classical_train
+  #   extractor: video_classical
+  #   loader:    video_folder
+  #   video_folder: data/raw/my_videos    # overrides top-level dataset
+  #   split:     train
+  #
+  # - name:      video_mobilenet_seq_train
+  #   extractor: video_mobilenet_v2_seq
+  #   loader:    video_folder
+  #   video_folder: data/raw/my_videos
+
+  # ── Tabular (adapt dataset to your CSV/Parquet/etc. file path) ────────────
+  # Uncomment and adjust paths/column names as needed.
+  #
+  # - name:      tabular_classical
+  #   extractor: tabular_classical
+  #   loader:    tabular
+  #   dataset:   data/raw/my_data.csv
+  #   label_col: species
+
+  # ── Text ──────────────────────────────────────────────────────────────────
+  # Uncomment and adapt to your text dataset.
+  #
+  # - name:      text_tfidf_train
+  #   extractor: text_tfidf
+  #   loader:    text_folder
+  #   text_folder: data/raw/my_texts
+  #
+  # - name:      text_sentence_embed_train
+  #   extractor: text_sentence_embed
+  #   loader:    text_csv
+  #   dataset:   data/raw/my_texts.csv
+  #   text_col:  content
+  #   label_col: category

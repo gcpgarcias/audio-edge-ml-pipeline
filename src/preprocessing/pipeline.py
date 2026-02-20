@@ -5,8 +5,8 @@ Ties a :class:`BaseDatasetLoader` to a :class:`BaseFeatureExtractor`,
 runs the extraction, and handles persistence of the resulting
 :class:`FeatureSet`.
 
-Typical usage
--------------
+Typical programmatic usage
+--------------------------
 ::
 
     from pathlib import Path
@@ -34,8 +34,26 @@ Persistence layout
         features.npy         float32 array, shape (N, *feature_dims)
         labels.npy           int32 array, shape (N,)  [absent if unsupervised]
         label_names.json     list[str]                [absent if unsupervised]
+        cluster_assignments.npy int32 (N,)            [absent if not clustered]
         metadata.json        list[dict]
         info.json            {feature_type, modality, n_samples, feature_shape}
+
+CLI usage — single run (flags)
+-------------------------------
+::
+
+    python -m src.preprocessing.pipeline \\
+        --loader birdeep --dataset data/raw/BIRDeep_AudioAnnotations \\
+        --split train --extractor audio_classical \\
+        --output data/processed/birdeep_classical
+
+CLI usage — config-driven (single or multi-run)
+-----------------------------------------------
+::
+
+    python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
+
+See :mod:`src.preprocessing.config` for the YAML schema.
 """
 
 from __future__ import annotations
@@ -218,40 +236,149 @@ class FeaturePipeline:
 
 
 # ---------------------------------------------------------------------------
+# Loader factory (shared by flag-based and config-based paths)
+# ---------------------------------------------------------------------------
+
+def _build_loader(
+    loader_name:  str,
+    dataset:      str,
+    split:        str,
+    label_col:    Optional[str] = None,
+    text_col:     str           = "text",
+    audio_folder: Optional[str] = None,
+    image_folder: Optional[str] = None,
+    text_folder:  Optional[str] = None,
+    video_folder: Optional[str] = None,
+) -> BaseDatasetLoader:
+    """Instantiate the requested loader with the given parameters.
+
+    Parameters
+    ----------
+    loader_name:
+        One of the recognised loader keys (e.g. ``"birdeep"``,
+        ``"audio_folder"``, ``"video_folder"``).
+    dataset:
+        Default dataset root / file path.
+    split:
+        Dataset split (``"train"``, ``"test"``, ``"validation"``, ``"all"``).
+    label_col, text_col, audio_folder, image_folder, text_folder, video_folder:
+        Loader-specific overrides (see CLI args for semantics).
+
+    Raises
+    ------
+    ValueError
+        If *loader_name* is not recognised.
+    """
+    from src.preprocessing.dataset_loaders import (
+        AudioFolderLoader,
+        BIRDeepImageLoader,
+        BIRDeepLoader,
+        ImageFolderLoader,
+        TabularLoader,
+        TextCSVLoader,
+        TextFolderLoader,
+        TextJSONLoader,
+        VideoFolderLoader,
+    )
+
+    if loader_name == "birdeep":
+        return BIRDeepLoader(dataset, split=split)
+    elif loader_name == "birdeep_image":
+        return BIRDeepImageLoader(dataset, split=split)
+    elif loader_name == "audio_folder":
+        root = audio_folder or dataset
+        return AudioFolderLoader(root, split=split)
+    elif loader_name == "image_folder":
+        root = image_folder or dataset
+        return ImageFolderLoader(root, split=split)
+    elif loader_name == "text_folder":
+        root = text_folder or dataset
+        return TextFolderLoader(root, split=split)
+    elif loader_name == "text_json":
+        return TextJSONLoader(dataset)
+    elif loader_name == "text_csv":
+        return TextCSVLoader(dataset, text_col=text_col, label_col=label_col)
+    elif loader_name == "tabular":
+        return TabularLoader(dataset, label_col=label_col)
+    elif loader_name == "video_folder":
+        root = video_folder or dataset
+        return VideoFolderLoader(root, split=split)
+    else:
+        raise ValueError(
+            f"Unknown loader: {loader_name!r}. "
+            "Valid choices: birdeep, birdeep_image, audio_folder, image_folder, "
+            "text_folder, text_json, text_csv, tabular, video_folder."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Quick-start CLI
 # ---------------------------------------------------------------------------
+
+_LOADER_CHOICES = [
+    "birdeep", "birdeep_image",
+    "audio_folder", "image_folder", "video_folder",
+    "text_folder", "text_json", "text_csv",
+    "tabular",
+]
+
 
 def _build_arg_parser():
     import argparse
 
     p = argparse.ArgumentParser(
-        description="Run the feature extraction pipeline on a dataset.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description=(
+            "Run the feature extraction pipeline on a dataset.\n\n"
+            "Two modes:\n"
+            "  1. Flag-based (single run): supply --loader, --extractor, etc.\n"
+            "  2. Config-driven (single or batch): supply --config <yaml>.\n"
+            "     --config and the flag-based args are mutually exclusive."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
+
+    # ---- Config-file mode -------------------------------------------
+    p.add_argument(
+        "--config",
+        default=None,
+        metavar="YAML",
+        help=(
+            "Path to a YAML pipeline config file.  When supplied, all other "
+            "flags are ignored (settings come from the file)."
+        ),
+    )
+
+    # ---- Flag-based mode --------------------------------------------
     p.add_argument(
         "--dataset",
         default="data/raw/BIRDeep_AudioAnnotations",
-        help="Path to the dataset root directory.",
+        help="Path to the dataset root directory or file.",
     )
     p.add_argument(
         "--loader",
         default="birdeep",
-        choices=[
-            "birdeep", "birdeep_image", "image_folder",
-            "text_folder", "text_json", "text_csv",
-            "tabular",
-        ],
+        choices=_LOADER_CHOICES,
         help="Dataset loader to use.",
+    )
+    p.add_argument(
+        "--audio-folder",
+        default=None,
+        help="Root path for audio_folder loader (overrides --dataset).",
     )
     p.add_argument(
         "--image-folder",
         default=None,
-        help="Root path for image_folder loader.",
+        help="Root path for image_folder loader (overrides --dataset).",
     )
     p.add_argument(
         "--text-folder",
         default=None,
-        help="Root path for text_folder loader.",
+        help="Root path for text_folder loader (overrides --dataset).",
+    )
+    p.add_argument(
+        "--video-folder",
+        default=None,
+        help="Root path for video_folder loader (overrides --dataset).",
     )
     p.add_argument(
         "--label-col",
@@ -271,13 +398,19 @@ def _build_arg_parser():
     p.add_argument(
         "--extractor",
         default="audio_classical",
-        help="Registered extractor name (see feature_extraction.list_extractors()).",
+        help=(
+            "Registered extractor name. "
+            "Run python -c \"from src.preprocessing.feature_extraction import "
+            "list_extractors; print(list_extractors())\" to see all options."
+        ),
     )
     p.add_argument(
         "--output",
         default=None,
-        help="Output directory for the saved FeatureSet. "
-             "Defaults to data/processed/<loader>_<extractor>_<split>.",
+        help=(
+            "Output directory for the saved FeatureSet. "
+            "Defaults to data/processed/<loader>_<extractor>_<split>."
+        ),
     )
     p.add_argument(
         "--max-samples",
@@ -288,55 +421,66 @@ def _build_arg_parser():
     return p
 
 
-def main() -> None:
-    from src.preprocessing.dataset_loaders import (
-        BIRDeepImageLoader,
-        BIRDeepLoader,
-        ImageFolderLoader,
-        TabularLoader,
-        TextCSVLoader,
-        TextFolderLoader,
-        TextJSONLoader,
-    )
-    from src.preprocessing.feature_extraction import get  # noqa: F401 – triggers registration
+def _run_experiment(exp) -> None:
+    """Execute a single :class:`ExperimentConfig` end-to-end."""
+    from src.preprocessing.feature_extraction import get  # triggers registration
 
+    loader = _build_loader(
+        loader_name=exp.loader,
+        dataset=exp.dataset or "data/raw/BIRDeep_AudioAnnotations",
+        split=exp.split,
+        label_col=exp.label_col,
+        text_col=exp.text_col,
+        audio_folder=exp.audio_folder,
+        image_folder=exp.image_folder,
+        text_folder=exp.text_folder,
+        video_folder=exp.video_folder,
+    )
+    extractor  = get(exp.extractor)()
+    output_dir = Path(exp.resolved_output())
+    pipeline   = FeaturePipeline(loader, extractor)
+    fs         = pipeline.run(max_samples=exp.max_samples)
+    FeaturePipeline.save(fs, output_dir)
+    print(f"[{exp.resolved_name()}] {fs}")
+    print(f"  -> {output_dir}")
+
+
+def main() -> None:
     args = _build_arg_parser().parse_args()
 
-    if args.loader == "birdeep":
-        loader = BIRDeepLoader(args.dataset, split=args.split)
-    elif args.loader == "birdeep_image":
-        loader = BIRDeepImageLoader(args.dataset, split=args.split)
-    elif args.loader == "image_folder":
-        root = args.image_folder or args.dataset
-        loader = ImageFolderLoader(root, split=args.split)
-    elif args.loader == "text_folder":
-        root = args.text_folder or args.dataset
-        loader = TextFolderLoader(root, split=args.split)
-    elif args.loader == "text_json":
-        loader = TextJSONLoader(args.dataset)
-    elif args.loader == "text_csv":
-        loader = TextCSVLoader(
-            args.dataset,
-            text_col=args.text_col,
-            label_col=args.label_col,
-        )
-    elif args.loader == "tabular":
-        loader = TabularLoader(args.dataset, label_col=args.label_col)
+    if args.config:
+        # ------ Config-driven mode -----------------------------------
+        from .config import load_config
+
+        cfg         = load_config(args.config)
+        experiments = cfg.resolved_experiments()
+        print(f"Config: {args.config}  ({len(experiments)} experiment(s))")
+
+        for exp in experiments:
+            print(f"\nRunning: {exp.resolved_name()} ...")
+            _run_experiment(exp)
+
+        print("\nAll experiments complete.")
+
     else:
-        raise ValueError(f"Unknown loader: {args.loader!r}")
+        # ------ Flag-based mode --------------------------------------
+        from .config import ExperimentConfig
 
-    extractor = get(args.extractor)()
-
-    output_dir = Path(
-        args.output
-        or f"data/processed/{args.loader}_{args.extractor}_{args.split}"
-    )
-
-    pipeline = FeaturePipeline(loader, extractor)
-    fs = pipeline.run(max_samples=args.max_samples)
-    FeaturePipeline.save(fs, output_dir)
-    print(f"Saved: {fs}")
-    print(f"Output: {output_dir}")
+        exp = ExperimentConfig(
+            extractor=args.extractor,
+            loader=args.loader,
+            dataset=args.dataset,
+            split=args.split,
+            output=args.output,
+            max_samples=args.max_samples,
+            label_col=args.label_col,
+            text_col=args.text_col,
+            audio_folder=args.audio_folder,
+            image_folder=args.image_folder,
+            text_folder=args.text_folder,
+            video_folder=args.video_folder,
+        )
+        _run_experiment(exp)
 
 
 if __name__ == "__main__":
