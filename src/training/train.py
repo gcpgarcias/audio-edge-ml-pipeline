@@ -1,273 +1,375 @@
-import tensorflow as tf
-from tensorflow import keras
-from pathlib import Path
-import mlflow
-import mlflow.tensorflow
-from datetime import datetime
-import time
+"""
+Stage 3 — Model Training entry point.
+
+Two operating modes
+-------------------
+
+**Flag-based (single run)**::
+
+    python -m src.training.train \\
+        --features data/processed/birdeep_classical_train \\
+        --model svm \\
+        --output data/models/birdeep_svm \\
+        [--features-test data/processed/birdeep_classical_test] \\
+        [--val-split 0.2] \\
+        [--experiment birdeep-classification] \\
+        [--max-samples 500] \\
+        [--param C=10.0] [--param kernel=linear]
+
+**Config-driven multi-model sweep**::
+
+    python -m src.training.train --config config/training.yaml
+
+After all runs complete, a ``shortlist.json`` is automatically written to the
+output directory via Stage 5 pre-optimisation selection.  Pass
+``--no-auto-select`` to suppress this.
+
+Each run:
+1. Loads a :class:`~src.preprocessing.pipeline.FeatureSet` from disk.
+2. Splits into train / val (stratified where possible).
+3. Instantiates the requested trainer.
+4. Calls ``trainer.fit()``.
+5. Optionally evaluates on a held-out test ``FeatureSet``.
+6. Logs everything to MLflow (local file store by default).
+"""
+
+from __future__ import annotations
+
 import argparse
-import json
 import logging
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
 
-from dataset import SpectrogramDataset
+import numpy as np
 
-logging.basicConfig(level=logging.INFO)
+# ── project imports ──────────────────────────────────────────────────────────
+# Ensure package root is on sys.path when invoked as __main__
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+
+from src.preprocessing.pipeline import FeaturePipeline
+from src.training.models import get_model, list_models
+from src.training.config import TrainConfig, ModelRunConfig, load_train_config
+from src.training import evaluate as ev
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%H:%M:%S",
+)
 logger = logging.getLogger(__name__)
 
-def create_cnn_model(input_shape, num_classes, filters=[16, 32], dropout_rate=0.3):
-    """Create a lightweight CNN that actually works."""
-    model = keras.Sequential([
-        # First conv block - NO BatchNorm
-        keras.layers.Conv2D(filters[0], (3, 3), activation='relu', input_shape=input_shape, padding='same'),
-        keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.Dropout(dropout_rate),
-        
-        # Second conv block
-        keras.layers.Conv2D(filters[1], (3, 3), activation='relu', padding='same'),
-        keras.layers.MaxPooling2D((2, 2)),
-        keras.layers.Dropout(dropout_rate),
-        
-        # Classifier
-        keras.layers.Flatten(),
-        keras.layers.Dense(64, activation='relu'),
-        keras.layers.Dropout(dropout_rate),
-        keras.layers.Dense(num_classes, activation='softmax')
-    ])
-    
-    return model
 
-def train_model(
-    data_dir: str,
-    epochs: int = 30,
-    batch_size: int = 32,
-    learning_rate: float = 0.001,
-    filters: list = [16, 32, 64],
-    dropout_rate: float = 0.3,
-    experiment_name: str = "audio-classification"
-):
-    """Main training function with MLflow tracking."""
-    
-    # Start overall timing
-    start_time = time.time()
-    
-    # Set MLflow tracking URI
-    mlflow.set_tracking_uri("http://localhost:5000")
-    mlflow.set_experiment(experiment_name)
-    
-    # Start MLflow run
-    with mlflow.start_run(run_name=f"cnn_training_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
-        
-        # Log parameters
-        mlflow.log_param("epochs", epochs)
-        mlflow.log_param("batch_size", batch_size)
-        mlflow.log_param("learning_rate", learning_rate)
-        mlflow.log_param("filters", filters)
-        mlflow.log_param("dropout_rate", dropout_rate)
-        mlflow.log_param("optimizer", "adam")
-        
-        # Load dataset
-        logger.info("Loading dataset...")
-        dataset_start = time.time()
-        dataset_loader = SpectrogramDataset(data_dir)
-        train_ds, val_ds, class_names = dataset_loader.load_dataset()
-        dataset_load_time = time.time() - dataset_start
-        
-        mlflow.log_metric("dataset_load_time_seconds", dataset_load_time)
-        logger.info(f"Dataset loaded in {dataset_load_time:.2f} seconds")
-        
-        mlflow.log_param("num_classes", len(class_names))
-        mlflow.log_param("train_samples", len(list(train_ds)))
-        
-        # Prepare datasets
-        train_ds = dataset_loader.prepare_for_training(train_ds, batch_size=batch_size, shuffle=True)
-        val_ds = dataset_loader.prepare_for_training(val_ds, batch_size=batch_size, shuffle=False)
-        
-        # Get input shape from first batch
-        for x, y in train_ds.take(1):
-            input_shape = x.shape[1:]
-        
-        logger.info(f"Input shape: {input_shape}")
-        logger.info(f"Classes: {class_names}")
-        
-        # Create model
-        logger.info("Creating model...")
-        model_creation_start = time.time()
-        model = create_cnn_model(input_shape, len(class_names), filters=[8, 16], dropout_rate=0.5)
-        model_creation_time = time.time() - model_creation_start
-        
-        mlflow.log_metric("model_creation_time_seconds", model_creation_time)
-        
-        # Compile model
-        compilation_start = time.time()
-        model.compile(
-            optimizer=keras.optimizers.Adam(learning_rate=learning_rate),
-            loss='sparse_categorical_crossentropy',
-            metrics=['accuracy']
-        )
-        compilation_time = time.time() - compilation_start
-        
-        mlflow.log_metric("model_compilation_time_seconds", compilation_time)
-        
-        # Log model summary
-        model_summary = []
-        model.summary(print_fn=lambda x: model_summary.append(x))
-        mlflow.log_text('\n'.join(model_summary), "model_summary.txt")
-        
-        # Count parameters
-        trainable_params = sum([tf.size(w).numpy() for w in model.trainable_weights])
-        mlflow.log_param("trainable_parameters", int(trainable_params))
-        
-        # Custom callback to track epoch timing
-        class TimingCallback(keras.callbacks.Callback):
-            def __init__(self):
-                super().__init__()
-                self.epoch_times = []
-                self.epoch_start_time = None
-            
-            def on_epoch_begin(self, epoch, logs=None):
-                self.epoch_start_time = time.time()
-            
-            def on_epoch_end(self, epoch, logs=None):
-                epoch_time = time.time() - self.epoch_start_time
-                self.epoch_times.append(epoch_time)
-                mlflow.log_metric("epoch_time_seconds", epoch_time, step=epoch)
-                logger.info(f"Epoch {epoch + 1} completed in {epoch_time:.2f} seconds")
-        
-        timing_callback = TimingCallback()
-        
-        # Callbacks
-        callbacks = [
-            timing_callback,
-            keras.callbacks.EarlyStopping(
-                monitor='val_loss',
-                patience=10,
-                restore_best_weights=True
-            ),
-            keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss',
-                factor=0.5,
-                patience=5,
-                min_lr=1e-6
-            ),
-            keras.callbacks.TensorBoard(
-                log_dir=f"logs/{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            )
-        ]
-        
-        # Train model
-        logger.info("Starting training...")
-        training_start = time.time()
-        history = model.fit(
-            train_ds,
-            validation_data=val_ds,
-            epochs=epochs,
-            callbacks=callbacks,
-            verbose=1
-        )
-        training_time = time.time() - training_start
-        
-        mlflow.log_metric("total_training_time_seconds", training_time)
-        mlflow.log_metric("total_training_time_minutes", training_time / 60)
-        
-        # Calculate average epoch time
-        avg_epoch_time = sum(timing_callback.epoch_times) / len(timing_callback.epoch_times)
-        mlflow.log_metric("avg_epoch_time_seconds", avg_epoch_time)
-        
-        logger.info(f"Training completed in {training_time:.2f} seconds ({training_time/60:.2f} minutes)")
-        logger.info(f"Average epoch time: {avg_epoch_time:.2f} seconds")
-        
-        # Log metrics
-        for epoch in range(len(history.history['loss'])):
-            mlflow.log_metric("train_loss", history.history['loss'][epoch], step=epoch)
-            mlflow.log_metric("train_accuracy", history.history['accuracy'][epoch], step=epoch)
-            mlflow.log_metric("val_loss", history.history['val_loss'][epoch], step=epoch)
-            mlflow.log_metric("val_accuracy", history.history['val_accuracy'][epoch], step=epoch)
-        
-        # Final metrics
-        final_train_acc = history.history['accuracy'][-1]
-        final_val_acc = history.history['val_accuracy'][-1]
-        
-        logger.info(f"Final training accuracy: {final_train_acc:.4f}")
-        logger.info(f"Final validation accuracy: {final_val_acc:.4f}")
-        
-        # Save class names
-        logger.info("Saving artifacts...")
-        save_start = time.time()
-        
-        class_names_path = Path("data/models/class_names.json")
-        class_names_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(class_names_path, "w") as f:
-            json.dump(class_names, f)
-        
-        mlflow.log_artifact(str(class_names_path))
-        
-        # Log model
-        model_logging_start = time.time()
-        mlflow.tensorflow.log_model(
-            model,
-            artifact_path="model",
-            registered_model_name="audio-classifier"
-        )
-        model_logging_time = time.time() - model_logging_start
-        mlflow.log_metric("model_logging_time_seconds", model_logging_time)
-        
-        # Save model locally
-        model_path = Path("data/models/audio_classifier.h5")
-        model.save(model_path)
-        
-        save_time = time.time() - save_start
-        mlflow.log_metric("artifact_save_time_seconds", save_time)
-        
-        logger.info(f"Model saved to {model_path}")
-        
-        # Total pipeline time
-        total_time = time.time() - start_time
-        mlflow.log_metric("total_pipeline_time_seconds", total_time)
-        mlflow.log_metric("total_pipeline_time_minutes", total_time / 60)
-        
-        # Create timing summary
-        timing_summary = {
-            "dataset_load_time": f"{dataset_load_time:.2f}s",
-            "model_creation_time": f"{model_creation_time:.2f}s",
-            "model_compilation_time": f"{compilation_time:.2f}s",
-            "total_training_time": f"{training_time:.2f}s ({training_time/60:.2f}m)",
-            "avg_epoch_time": f"{avg_epoch_time:.2f}s",
-            "model_logging_time": f"{model_logging_time:.2f}s",
-            "artifact_save_time": f"{save_time:.2f}s",
-            "total_pipeline_time": f"{total_time:.2f}s ({total_time/60:.2f}m)"
-        }
-        
-        mlflow.log_dict(timing_summary, "timing_summary.json")
-        
-        logger.info("\n" + "="*50)
-        logger.info("TIMING SUMMARY")
-        logger.info("="*50)
-        for key, value in timing_summary.items():
-            logger.info(f"{key}: {value}")
-        logger.info("="*50)
-        
-        return model, history, class_names
+# ---------------------------------------------------------------------------
+# MLflow helpers
+# ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(description="Train audio classification model")
-    parser.add_argument("--data-dir", type=str, default="data/processed/spectrograms")
-    parser.add_argument("--epochs", type=int, default=30)
-    parser.add_argument("--batch-size", type=int, default=32)
-    parser.add_argument("--learning-rate", type=float, default=0.001)
-    parser.add_argument("--experiment-name", type=str, default="audio-classification")
-    
-    args = parser.parse_args()
-    
-    model, history, class_names = train_model(
-        data_dir=args.data_dir,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        learning_rate=args.learning_rate,
-        experiment_name=args.experiment_name
+def _setup_mlflow(uri: Optional[str], experiment: str):
+    """Configure MLflow tracking URI and experiment, return mlflow module."""
+    import mlflow
+
+    tracking_uri = uri or os.getenv("MLFLOW_TRACKING_URI", "mlflow/")
+    mlflow.set_tracking_uri(tracking_uri)
+    mlflow.set_experiment(experiment)
+    logger.info("MLflow tracking URI: %s  experiment: %s", tracking_uri, experiment)
+    return mlflow
+
+
+# ---------------------------------------------------------------------------
+# Core per-run logic
+# ---------------------------------------------------------------------------
+
+def _run_one(
+    run:        ModelRunConfig,
+    experiment: str,
+    mlflow_uri: Optional[str],
+    max_samples: Optional[int] = None,
+) -> None:
+    """Execute a single training run described by *run*."""
+
+    import mlflow
+
+    # ── 1. Load FeatureSet ────────────────────────────────────────────────
+    features_dir = Path(run.features_dir)
+    logger.info("[%s] Loading features from %s", run.name, features_dir)
+    pipeline = FeaturePipeline.load(features_dir)
+    feature_set = pipeline.feature_set
+
+    X: np.ndarray = feature_set.features
+    y: np.ndarray = feature_set.labels
+    label_names: list[str] = feature_set.label_names or []
+
+    if y is None:
+        raise ValueError(
+            f"FeatureSet at '{features_dir}' has no labels. "
+            "Supervised training requires labelled data."
+        )
+
+    if max_samples and max_samples < len(X):
+        rng = np.random.default_rng(42)
+        idx = rng.choice(len(X), max_samples, replace=False)
+        X, y = X[idx], y[idx]
+        logger.info("[%s] Subsampled to %d samples", run.name, max_samples)
+
+    # ── 2. Train / val split ──────────────────────────────────────────────
+    from sklearn.model_selection import train_test_split
+
+    try:
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=run.val_split, random_state=42, stratify=y
+        )
+    except ValueError:
+        # Fallback if a class has only 1 sample (can't stratify)
+        X_train, X_val, y_train, y_val = train_test_split(
+            X, y, test_size=run.val_split, random_state=42
+        )
+
+    logger.info(
+        "[%s] Train: %d  Val: %d  Classes: %d",
+        run.name, len(X_train), len(X_val), len(label_names),
     )
-    
-    print("\nTraining complete!")
-    print(f"Final validation accuracy: {history.history['val_accuracy'][-1]:.4f}")
+
+    # ── 3. Output directory ───────────────────────────────────────────────
+    output_dir = Path(run.output_dir) / run.name
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── 4. MLflow run ─────────────────────────────────────────────────────
+    mlflow_module = _setup_mlflow(mlflow_uri, experiment)
+    run_name = f"{run.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    with mlflow_module.start_run(run_name=run_name) as active_run:
+
+        # ── 5. Train ──────────────────────────────────────────────────────
+        trainer_cls = get_model(run.model)
+        trainer = trainer_cls(**run.params)
+
+        result = trainer.fit(
+            X_train=X_train,
+            y_train=y_train,
+            X_val=X_val,
+            y_val=y_val,
+            label_names=label_names,
+            run_name=run_name,
+            output_dir=output_dir,
+            mlflow_run=active_run,
+        )
+
+        # ── 6. Optional test-set evaluation ───────────────────────────────
+        if run.features_test_dir:
+            test_dir = Path(run.features_test_dir)
+            logger.info("[%s] Evaluating on test set: %s", run.name, test_dir)
+            try:
+                test_pipeline = FeaturePipeline.load(test_dir)
+                test_fs = test_pipeline.feature_set
+                X_test, y_test = test_fs.features, test_fs.labels
+
+                if y_test is not None:
+                    y_pred_test = trainer.predict(X_test)
+                    y_proba_test = trainer.predict_proba(X_test)
+                    test_metrics = ev.compute_metrics(
+                        y_test, y_pred_test, y_proba_test, label_names
+                    )
+                    # Log test metrics to MLflow with "test_" prefix
+                    for k, v in test_metrics.items():
+                        if isinstance(v, (int, float)):
+                            mlflow_module.log_metric(f"test_{k}", float(v))
+
+                    logger.info(
+                        "[%s] Test accuracy: %.4f  F1-macro: %.4f",
+                        run.name,
+                        test_metrics.get("val_accuracy", float("nan")),
+                        test_metrics.get("val_f1_macro", float("nan")),
+                    )
+            except Exception as exc:
+                logger.warning("[%s] Test-set evaluation failed: %s", run.name, exc)
+
+        # ── 7. Summary ────────────────────────────────────────────────────
+        acc = result.metrics.get("val_accuracy", float("nan"))
+        f1  = result.metrics.get("val_f1_macro", float("nan"))
+        logger.info(
+            "[%s] Done — val_accuracy=%.4f  val_f1_macro=%.4f  size=%.1f KB",
+            run.name, acc, f1, result.model_size_kb,
+        )
+        logger.info("[%s] Artefacts: %s", run.name, result.output_dir)
+
+
+# ---------------------------------------------------------------------------
+# Auto-selection helper (Stage 5 pre-opt, called at end of every sweep)
+# ---------------------------------------------------------------------------
+
+def _auto_select(
+    experiment:   str,
+    mlflow_uri:   Optional[str],
+    output_dir:   Path,
+    metric:       str            = "val_f1_macro",
+    min_accuracy: Optional[float] = None,
+    top_n:        int            = 5,
+) -> None:
+    """Run pre-opt model selection and write ``shortlist.json`` to *output_dir*.
+
+    Failures are non-fatal — a warning is logged and training is considered
+    successful regardless.
+    """
+    from src.training.select import select_preopt, write_shortlist
+    try:
+        candidates = select_preopt(
+            experiment   = experiment,
+            mlflow_uri   = mlflow_uri,
+            metric       = metric,
+            min_accuracy = min_accuracy,
+            top_n        = top_n,
+        )
+        if candidates:
+            shortlist_path = output_dir / "shortlist.json"
+            write_shortlist(candidates, shortlist_path, experiment, metric)
+        else:
+            logger.warning("Auto-select: no qualifying runs found in experiment '%s'.", experiment)
+    except Exception as exc:
+        logger.warning("Auto-select failed (non-fatal): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def _parse_param(s: str) -> tuple[str, object]:
+    """Parse ``key=value`` into a typed (key, value) pair."""
+    if "=" not in s:
+        raise argparse.ArgumentTypeError(f"--param must be 'key=value', got '{s}'")
+    k, v = s.split("=", 1)
+    # Try int → float → str
+    for cast in (int, float):
+        try:
+            return k.strip(), cast(v.strip())
+        except ValueError:
+            pass
+    # Bool special-case
+    if v.strip().lower() in ("true", "yes"):
+        return k.strip(), True
+    if v.strip().lower() in ("false", "no"):
+        return k.strip(), False
+    return k.strip(), v.strip()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="python -m src.training.train",
+        description="Stage 3 — Model Training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+
+    # Config-driven mode
+    p.add_argument(
+        "--config", metavar="YAML",
+        help="Path to a training.yaml config (multi-model sweep).",
+    )
+
+    # Flag-based single-run mode
+    single = p.add_argument_group("single-run flags (ignored when --config is used)")
+    single.add_argument(
+        "--features", metavar="DIR",
+        help="Path to a Stage 2 FeatureSet directory.",
+    )
+    single.add_argument(
+        "--features-test", metavar="DIR",
+        help="Optional path to a held-out test FeatureSet.",
+    )
+    single.add_argument(
+        "--model", metavar="NAME",
+        help=f"Trainer name. One of: {', '.join(list_models())}",
+    )
+    single.add_argument(
+        "--output", metavar="DIR", default="data/models",
+        help="Root output directory for model artefacts (default: data/models).",
+    )
+    single.add_argument(
+        "--val-split", type=float, default=0.2,
+        help="Fraction of data used for validation (default: 0.2).",
+    )
+    single.add_argument(
+        "--experiment", default="ml-pipeline",
+        help="MLflow experiment name (default: ml-pipeline).",
+    )
+    single.add_argument(
+        "--run-name", metavar="NAME",
+        help="Human-readable run name (default: <model>).",
+    )
+    single.add_argument(
+        "--max-samples", type=int, metavar="N",
+        help="Randomly subsample to at most N examples (useful for smoke tests).",
+    )
+    single.add_argument(
+        "--param", action="append", dest="params", metavar="KEY=VALUE",
+        type=_parse_param, default=[],
+        help="Trainer hyperparameter (repeat for multiple). E.g. --param C=10.0",
+    )
+
+    p.add_argument(
+        "--no-auto-select", action="store_true",
+        help="Skip automatic shortlist generation (Stage 5 pre-opt) after training.",
+    )
+
+    return p
+
+
+def main(argv: Optional[list[str]] = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    # ── Config-driven mode ────────────────────────────────────────────────
+    if args.config:
+        cfg = load_train_config(Path(args.config))
+        runs = cfg.resolved_runs()
+        if not runs:
+            logger.error("No runs defined in %s", args.config)
+            sys.exit(1)
+        logger.info("Config sweep: %d run(s) in experiment '%s'", len(runs), cfg.experiment)
+        for run in runs:
+            try:
+                _run_one(run, cfg.experiment, cfg.mlflow_uri)
+            except Exception as exc:
+                logger.error("Run '%s' failed: %s", run.name, exc, exc_info=True)
+
+        if cfg.auto_select and not args.no_auto_select:
+            _auto_select(
+                experiment   = cfg.experiment,
+                mlflow_uri   = cfg.mlflow_uri,
+                output_dir   = Path(cfg.output_dir),
+                metric       = cfg.auto_select_metric,
+                min_accuracy = cfg.auto_select_min_accuracy,
+                top_n        = cfg.auto_select_top_n,
+            )
+        return
+
+    # ── Flag-based single-run mode ────────────────────────────────────────
+    if not args.features:
+        parser.error("--features is required when not using --config")
+    if not args.model:
+        parser.error(f"--model is required. Available: {', '.join(list_models())}")
+
+    params = dict(args.params) if args.params else {}
+    run = ModelRunConfig(
+        model             = args.model,
+        name              = args.run_name or args.model,
+        features_dir      = args.features,
+        features_test_dir = args.features_test,
+        output_dir        = args.output,
+        val_split         = args.val_split,
+        params            = params,
+    )
+
+    _run_one(run, args.experiment, mlflow_uri=None, max_samples=args.max_samples)
+
+    if not args.no_auto_select:
+        _auto_select(
+            experiment   = args.experiment,
+            mlflow_uri   = None,
+            output_dir   = Path(args.output),
+        )
+
 
 if __name__ == "__main__":
     main()

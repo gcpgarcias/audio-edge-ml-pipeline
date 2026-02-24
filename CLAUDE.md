@@ -9,7 +9,7 @@ Keep it concise (< 200 lines); link to topic files in `.claude/` for details.
 
 A **10-stage ML pipeline** for deploying event-classification models on embedded
 devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
-(36 bird species, WAV + PNG pairs, YOLOv8 bbox annotations, pre-split CSVs).
+(36 bird species, WAV + PNG pairs, YOLOv8 bbox annotations, pre-split CSVs). The pipeline is capable of ingesting and preprocessing audio, image, text, tabular (numeric) and video datasets.
 
 ### Pipeline Stages
 
@@ -17,10 +17,11 @@ devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
 |---|-------|----------------|--------|
 | 1 | Data ingestion | Python / FastAPI (`src/ingestion/api.py`) | Done |
 | 2 | Data transformation | Python (`src/preprocessing/`) | **Done** |
-| 3 | Model training | TensorFlow (`src/training/`) | Needs expansion |
-| 4 | Model evaluation | MLflow (`docker/`) | Needs expansion |
-| 5 | Model selection | scikit-learn | TODO |
-| 6 | Model optimization | LiteRT (`src/optimization/quantize.py`) | Needs expansion |
+| 3 | Model training | sklearn + Keras (`src/training/`) | **Done** |
+| 4 | Model evaluation | MLflow local file store (`mlflow/`) | **Done** |
+| 5a | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
+| 6 | Model optimization | LiteRT (`src/optimization/quantize.py`) | Needs review |
+| 5b | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
 | 7 | Model compilation | Apache TVM | TODO |
 | 8 | Model deployment | PlatformIO (`src/deployment/edge_simulator.py`) | TODO |
 | 9 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | Needs review |
@@ -108,7 +109,20 @@ src/preprocessing/
     └── video_folder_loader.py         # VideoFolderLoader — class-per-subfolder .mp4/.avi/…
 
 config/
-└── feature_extraction.yaml            # Example multi-run config (edit & run with --config)
+├── feature_extraction.yaml            # Example multi-run config (edit & run with --config)
+└── training.yaml                      # Example multi-model training sweep
+
+src/training/
+├── dataset.py                         # Legacy shim for old spectrogram format (keep)
+├── config.py                          # TrainConfig / ModelRunConfig + load_train_config()
+├── evaluate.py                        # compute_metrics(), save_confusion_matrix_png(), log_run_to_mlflow()
+├── train.py                           # Stage 3 entry point (flag-based + --config sweep)
+├── select.py                          # Stage 5 CLI — filter & rank MLflow runs
+└── models/
+    ├── __init__.py                    # @register_model, get_model(), list_models() + imports
+    ├── base.py                        # BaseTrainer (ABC), TrainResult (dataclass)
+    ├── classical.py                   # 7 sklearn trainers (svm, lda, decision_tree, …)
+    └── deep.py                        # 4 Keras trainers (mlp, cnn, rnn, transformer)
 ```
 
 ---
@@ -145,7 +159,7 @@ info.json             {feature_type, modality, n_samples, feature_shape, …}
 
 ---
 
-## Running the CLI
+## Running the CLI for Stage 2
 
 ```bash
 # Single run — flags
@@ -172,24 +186,105 @@ python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
 
 ---
 
+## Stage 3–5 — Training, Evaluation, Selection
+
+### Registered Trainers (11 total)
+
+```
+Classical:  svm  lda  decision_tree  random_forest  knn  kmeans  pca_svm
+Deep:       mlp  cnn  rnn  transformer
+```
+
+`python -c "from src.training.models import list_models; print(list_models())"`
+
+### Adding a new trainer
+
+1. Create `src/training/models/<file>.py`.
+2. Subclass `BaseTrainer`; set class-level `name` and `model_type`.
+3. Decorate with `@register_model` (import from `src.training.models`).
+4. Implement `fit()`, `predict()`, `save()`, `load()`.
+5. Import the class in `src/training/models/__init__.py`.
+
+### Stage 3/4 artefacts layout (`data/models/<run_name>/`)
+
+```text
+<model>.joblib | model.keras   serialised model file
+confusion_matrix.png           heatmap
+classification_report.txt      sklearn text report
+model_info.json                {model_name, run_name, val_accuracy, …}
+shortlist.json                 top-N candidates written automatically after sweep
+```
+
+### Stage 3/4 CLI
+
+```bash
+# Single model run
+python -m src.training.train \
+    --features data/processed/birdeep_classical_train \
+    --model svm --output data/models/birdeep_svm \
+    --features-test data/processed/birdeep_classical_test \
+    --experiment birdeep-classification \
+    --param C=10.0 --param kernel=rbf
+
+# Smoke test (subsample)
+python -m src.training.train \
+    --features data/processed/birdeep_classical_train \
+    --model svm --output data/models/smoke \
+    --max-samples 200
+
+# Multi-model config sweep
+python -m src.training.train --config config/training.yaml
+
+# Local MLflow UI
+mlflow ui --backend-store-uri mlflow/
+```
+
+### Stage 5 — Two-checkpoint selection
+
+**Checkpoint 1 (pre-opt)** runs automatically at the end of every training sweep
+and writes `shortlist.json`.  No size filter — sizes change after Stage 6.
+
+**Checkpoint 2 (post-opt)** runs manually after Stage 6 and applies the real
+`--max-size-kb` constraint against actual compressed sizes.
+
+```bash
+# Pre-opt: re-rank manually with a different metric
+python -m src.training.select \
+    --experiment birdeep-classification \
+    --min-accuracy 0.70 --metric val_f1_macro --top-n 5 \
+    --output data/models/shortlist.json
+
+# Post-opt: selection after Stage 6 optimisation
+python -m src.training.select \
+    --post-opt \
+    --shortlist data/models/shortlist.json \
+    --opt-dir   data/models/optimized \
+    --max-size-kb 256 \
+    --metric val_accuracy_optimized \
+    --output data/models/best_model.json
+
+# Opt-in to Docker MLflow stack
+export MLFLOW_TRACKING_URI=http://localhost:5000
+```
+
+**Stage 6 contract** — each optimised model must write:
+`data/models/optimized/<model_name>/optimization_report.json`
+with fields: `optimized_size_kb`, `val_accuracy_optimized`, `accuracy_drop`,
+`quantization_method`, `latency_ms`, etc.  See `select.py` module docstring for
+the full schema.
+
+---
+
 ## Pending Work
-
-### Stage 3 - Model training
-
-Needs refactoring to implement multiple ML models: from classical (SVM, LDA, PCA, Decision Tree, Random Forest, K-NN, K-Means) through deep learning (RNN, CNN, Transformers).
-
-### Stage 4 - Model evaluation
-
-Currently lives inside training.py, effectively compacting Stages 3 & 4 together. This is fine. Investigate whether MLFlow is still the best option or if some form of local storage is better than a dockerized container.
-
-### Stage 5 - Model selection
-
-Should read the necessary metrics from MLFlow to select the best model according to multiple parameters, respecting the end goal of optimizing and compiling to an embedded device with limited resources.
 
 ### Stage 10 — Model updating
 
 Not yet designed. Will need a feedback loop from the monitoring dashboard
 back to the training stage.
+
+### Stage 6 — Model optimization
+
+Use LiteRT or TensorFlow Lite to produce optimized model files, evalute and select them in connection with stages 4 & 5.
 
 ---
 
