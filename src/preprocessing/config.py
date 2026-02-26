@@ -112,10 +112,11 @@ class ExperimentConfig:
     max_samples:  Optional[int] = None
     label_col:    Optional[str] = None
     text_col:     str           = "text"
-    audio_folder: Optional[str] = None
-    image_folder: Optional[str] = None
-    text_folder:  Optional[str] = None
-    video_folder: Optional[str] = None
+    audio_folder:    Optional[str] = None
+    image_folder:    Optional[str] = None
+    text_folder:     Optional[str] = None
+    video_folder:    Optional[str] = None
+    extractor_params: dict         = field(default_factory=dict)
 
     def resolved_name(self) -> str:
         """Return *name* or auto-generate one from loader/extractor/split."""
@@ -175,11 +176,12 @@ class PipelineConfig:
     max_samples:  Optional[int] = None
     label_col:    Optional[str] = None
     text_col:     str           = "text"
-    audio_folder: Optional[str] = None
-    image_folder: Optional[str] = None
-    text_folder:  Optional[str] = None
-    video_folder: Optional[str] = None
-    experiments:  list[ExperimentConfig] = field(default_factory=list)
+    audio_folder:    Optional[str] = None
+    image_folder:    Optional[str] = None
+    text_folder:     Optional[str] = None
+    video_folder:    Optional[str] = None
+    extractor_params: dict         = field(default_factory=dict)
+    experiments:     list[ExperimentConfig] = field(default_factory=list)
 
     def resolved_experiments(self) -> list[ExperimentConfig]:
         """Return resolved experiments, merging top-level defaults.
@@ -214,6 +216,7 @@ class PipelineConfig:
                     image_folder=self.image_folder,
                     text_folder=self.text_folder,
                     video_folder=self.video_folder,
+                    extractor_params=self.extractor_params,
                 )
             ]
 
@@ -234,6 +237,7 @@ class PipelineConfig:
                 image_folder=exp.image_folder or self.image_folder,
                 text_folder=exp.text_folder or self.text_folder,
                 video_folder=exp.video_folder or self.video_folder,
+                extractor_params=exp.extractor_params if exp.extractor_params else self.extractor_params,
             )
             if not merged.extractor:
                 raise ValueError(

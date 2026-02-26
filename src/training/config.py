@@ -203,7 +203,7 @@ def load_train_config(path: Path) -> TrainConfig:
                 features_test_dir = item.get("features_test_dir"),
                 output_dir        = item.get("output_dir"),
                 val_split         = float(item.get("val_split", 0.2)),
-                params            = item.get("params", {}),
+                params            = item.get("params") or {},
             )
         )
 

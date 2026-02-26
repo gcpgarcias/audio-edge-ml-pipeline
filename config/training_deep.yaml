@@ -1,0 +1,124 @@
+# Training pipeline — multi-model config
+#
+# Usage:
+#   python -m src.training.train --config config/training.yaml
+#
+# Top-level fields are inherited by every run as defaults.
+# Any run can override them by setting the same key locally.
+#
+# Required top-level keys: features_dir, output_dir
+
+# ── Defaults ────────────────────────────────────────────────────────────────
+
+features_dir:      data/processed/birdeep_mfcc_seq_train
+output_dir:        data/models
+experiment:        birdeep-classification-deep
+
+# mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlflow/"
+#                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
+
+val_split:         0.2
+
+# Optional held-out test FeatureSet (same feature type as features_dir)
+# features_test_dir: data/processed/birdeep_classical_test
+
+# ── Runs ────────────────────────────────────────────────────────────────────
+
+runs:
+
+# ── Deep models on mel spectrogram features ───────────────────────────────
+  # Un-comment and point features_dir at a deep FeatureSet, e.g.
+  #   data/processed/birdeep_melspec_train  (shape: N × H × W)
+  # or
+  #   data/processed/birdeep_mfcc_seq_train  (shape: N × T × D)
+
+  - model: mlp
+    name:  birdeep_mlp
+    features_dir: data/processed/birdeep_classical_train
+    params:
+      hidden_units: [256, 128]
+      dropout:      0.4
+      epochs:       50
+      batch_size:   32
+
+  - model: cnn
+    name:  birdeep_cnn_melspec
+    features_dir: data/processed/birdeep_melspec_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: cnn
+    name:  birdeep_cnn_mfcc
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: cnn
+    name:  birdeep_cnn_cqt
+    features_dir: data/processed/birdeep_cqt_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: cnn
+    name:  birdeep_cnn_waveform
+    features_dir: data/processed/birdeep_waveform_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: rnn
+    name:  birdeep_rnn_waveform
+    features_dir: data/processed/birdeep_waveform_train
+    params:
+      units:      128
+      n_layers:   2
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: rnn
+    name:  birdeep_rnn_mfcc
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    params:
+      units:      128
+      n_layers:   2
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: transformer
+    name:  birdeep_transformer_melspec
+    features_dir: data/processed/birdeep_melspec_train
+    params:
+      num_heads:  4
+      ff_dim:     128
+      n_blocks:   2
+      dropout:    0.1
+      epochs:     50
+      batch_size: 32
+
+  - model: transformer
+    name:  birdeep_transformer_mfcc
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    params:
+      num_heads:  4
+      ff_dim:     128
+      n_blocks:   2
+      dropout:    0.1
+      epochs:     50
+      batch_size: 32

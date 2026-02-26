@@ -436,7 +436,7 @@ def _run_experiment(exp) -> None:
         text_folder=exp.text_folder,
         video_folder=exp.video_folder,
     )
-    extractor  = get(exp.extractor)()
+    extractor  = get(exp.extractor)(**exp.extractor_params)
     output_dir = Path(exp.resolved_output())
     pipeline   = FeaturePipeline(loader, extractor)
     fs         = pipeline.run(max_samples=exp.max_samples)

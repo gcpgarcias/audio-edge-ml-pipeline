@@ -70,7 +70,7 @@ def _setup_mlflow(uri: Optional[str], experiment: str):
     """Configure MLflow tracking URI and experiment, return mlflow module."""
     import mlflow
 
-    tracking_uri = uri or os.getenv("MLFLOW_TRACKING_URI", "mlflow/")
+    tracking_uri = uri or os.getenv("MLFLOW_TRACKING_URI", "mlruns/")
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment)
     logger.info("MLflow tracking URI: %s  experiment: %s", tracking_uri, experiment)
