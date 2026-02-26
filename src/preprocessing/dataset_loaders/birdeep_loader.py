@@ -164,7 +164,7 @@ class BIRDeepLoader(BaseDatasetLoader):
     # ------------------------------------------------------------------
 
     def _load_and_filter(self, csv_path: Path) -> "pd.DataFrame":
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, on_bad_lines="warn")
 
         # Normalise column names (strip whitespace)
         df.columns = df.columns.str.strip()
@@ -332,7 +332,7 @@ class BIRDeepImageLoader(BaseDatasetLoader):
     # ------------------------------------------------------------------
 
     def _load_and_filter(self, csv_path: Path) -> "pd.DataFrame":
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, on_bad_lines="warn")
         df.columns = df.columns.str.strip()
 
         # Only rows with a valid bbox are useful for the image loader

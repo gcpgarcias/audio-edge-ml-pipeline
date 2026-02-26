@@ -23,10 +23,10 @@ experiments:
     loader:    birdeep
     # output defaults to data/processed/birdeep_classical_train
 
-  - name:      birdeep_classical_test
+  - name:      birdeep_classical_val
     extractor: audio_classical
     loader:    birdeep
-    split:     test
+    split:     validation
 
   - name:      birdeep_melspec_train
     extractor: audio_mel_spec
@@ -35,6 +35,15 @@ experiments:
   - name:      birdeep_mfcc_seq_train
     extractor: audio_mfcc_seq
     loader:    birdeep
+
+  - name:      birdeep_cqt_train
+    extractor: audio_cqt
+    loader:    birdeep
+
+  - name:      birdeep_waveform_train
+    extractor: audio_waveform
+    loader:    birdeep
+    
 
   # ── Image ─────────────────────────────────────────────────────────────────
 

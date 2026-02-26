@@ -20,11 +20,11 @@ devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
 | 3 | Model training | sklearn + Keras (`src/training/`) | **Done** |
 | 4 | Model evaluation | MLflow local file store (`mlflow/`) | **Done** |
 | 5a | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
-| 6 | Model optimization | LiteRT (`src/optimization/quantize.py`) | Needs review |
+| 6 | Model optimization | LiteRT (`src/optimization/quantize.py`) | Next refactoring |
 | 5b | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
 | 7 | Model compilation | Apache TVM | TODO |
 | 8 | Model deployment | PlatformIO (`src/deployment/edge_simulator.py`) | TODO |
-| 9 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | Needs review |
+| 9 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | TODO |
 | 10 | Model updating | — | TODO |
 
 ---

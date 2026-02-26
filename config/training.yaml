@@ -73,7 +73,7 @@ runs:
       C:            1.0
       kernel:       rbf
 
-  # ── Deep models on mel spectrogram features ───────────────────────────────
+# ── Deep models on mel spectrogram features ───────────────────────────────
   # Un-comment and point features_dir at a deep FeatureSet, e.g.
   #   data/processed/birdeep_melspec_train  (shape: N × H × W)
   # or

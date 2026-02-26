@@ -94,8 +94,7 @@ def _run_one(
     # ── 1. Load FeatureSet ────────────────────────────────────────────────
     features_dir = Path(run.features_dir)
     logger.info("[%s] Loading features from %s", run.name, features_dir)
-    pipeline = FeaturePipeline.load(features_dir)
-    feature_set = pipeline.feature_set
+    feature_set = FeaturePipeline.load(features_dir)
 
     X: np.ndarray = feature_set.features
     y: np.ndarray = feature_set.labels
@@ -161,8 +160,7 @@ def _run_one(
             test_dir = Path(run.features_test_dir)
             logger.info("[%s] Evaluating on test set: %s", run.name, test_dir)
             try:
-                test_pipeline = FeaturePipeline.load(test_dir)
-                test_fs = test_pipeline.feature_set
+                test_fs = FeaturePipeline.load(test_dir)
                 X_test, y_test = test_fs.features, test_fs.labels
 
                 if y_test is not None:

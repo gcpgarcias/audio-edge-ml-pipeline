@@ -151,8 +151,14 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
             mono=True,
         )
 
-        # Guarantee at least min_duration worth of samples
-        min_samples = int(self.min_duration * self.sample_rate)
+        # Guarantee enough samples for:
+        #   • n_fft — at least one STFT frame
+        #   • delta width=9 — at least 9 MFCC frames (requires (9-1)*hop_length samples with center=True)
+        min_samples = max(
+            int(self.min_duration * self.sample_rate),
+            self.n_fft,
+            8 * self.hop_length,  # (delta_width - 1) * hop_length
+        )
         if len(audio) < min_samples:
             audio = np.pad(audio, (0, min_samples - len(audio)))
 
@@ -192,9 +198,11 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
         rms = librosa.feature.rms(y=audio, frame_length=n, hop_length=hop)
 
         # ---- Tonnetz ----
-        # Requires harmonic component; librosa handles mono gracefully.
-        harmonic = librosa.effects.harmonic(audio)
-        tonnetz  = librosa.feature.tonnetz(y=harmonic, sr=sr)  # shape (6, T)
+        # Pass the already-computed chroma_stft directly to avoid an internal
+        # CQT that librosa.feature.tonnetz runs when given raw audio — the CQT
+        # downsamples the signal at each octave and raises spurious n_fft
+        # warnings on short (padded) segments.
+        tonnetz  = librosa.feature.tonnetz(chroma=chroma)  # shape (6, T)
 
         # ---- Aggregate: mean + std over time axis ----
         parts = [

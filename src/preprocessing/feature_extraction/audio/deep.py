@@ -27,15 +27,13 @@ import numpy as np
 from ..base import BaseFeatureExtractor
 from ..registry import register
 
-_MIN_SAMPLES: int = 1  # absolute floor; librosa handles too-short audio
-
-
 def _load_segment(
     path:        Path,
     sample_rate: int,
     start_time:  Optional[float],
     end_time:    Optional[float],
     min_duration: float = 0.1,
+    min_samples:  int   = 1,
 ) -> np.ndarray:
     """Load (and optionally slice) a mono audio segment."""
     offset   = float(start_time) if start_time is not None else 0.0
@@ -50,6 +48,10 @@ def _load_segment(
         duration=duration,
         mono=True,
     )
+
+    if len(audio) < min_samples:
+        audio = np.pad(audio, (0, min_samples - len(audio)))
+
     return audio
 
 
@@ -114,7 +116,8 @@ class AudioMelSpectrogram(BaseFeatureExtractor):
         end_time:    Optional[float] = None,
         **_kwargs,
     ) -> np.ndarray:
-        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time)
+        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time,
+                              min_samples=self.n_fft)
 
         if self.duration is not None:
             target = int(self.duration * self.sample_rate)
@@ -236,7 +239,8 @@ class AudioCQT(BaseFeatureExtractor):
         end_time:    Optional[float] = None,
         **_kwargs,
     ) -> np.ndarray:
-        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time)
+        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time,
+                              min_samples=self.hop_length * 2)
 
         if self.duration is not None:
             target = int(self.duration * self.sample_rate)
@@ -304,7 +308,8 @@ class AudioMFCCSequence(BaseFeatureExtractor):
         end_time:    Optional[float] = None,
         **_kwargs,
     ) -> np.ndarray:
-        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time)
+        audio = _load_segment(sample_path, self.sample_rate, start_time, end_time,
+                              min_samples=self.n_fft)
 
         if self.duration is not None:
             target = int(self.duration * self.sample_rate)

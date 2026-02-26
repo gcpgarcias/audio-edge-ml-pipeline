@@ -3,7 +3,7 @@ data/
 __pycache__/
 .DS_Store
 .env
-mlruns/
+mlflow/
 *.h5
 *.tflite
 venv/
