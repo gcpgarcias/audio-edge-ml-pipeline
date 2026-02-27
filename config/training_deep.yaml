@@ -38,7 +38,7 @@ runs:
     params:
       hidden_units: [256, 128]
       dropout:      0.4
-      epochs:       50
+      epochs:       100
       batch_size:   32
 
   - model: cnn
@@ -48,7 +48,7 @@ runs:
       filters:    32
       n_blocks:   3
       dropout:    0.3
-      epochs:     50
+      epochs:     100
       batch_size: 32
 
   - model: cnn
@@ -58,7 +58,7 @@ runs:
       filters:    32
       n_blocks:   3
       dropout:    0.3
-      epochs:     50
+      epochs:     100
       batch_size: 32
 
   - model: cnn
@@ -68,28 +68,20 @@ runs:
       filters:    32
       n_blocks:   3
       dropout:    0.3
-      epochs:     50
+      epochs:     100
       batch_size: 32
 
-  - model: cnn
-    name:  birdeep_cnn_waveform
-    features_dir: data/processed/birdeep_waveform_train
-    params:
-      filters:    32
-      n_blocks:   3
-      dropout:    0.3
-      epochs:     50
-      batch_size: 32
+  # birdeep_cnn_waveform is intentionally excluded:
+  # CNN uses MaxPooling2D((2,2)) which requires both spatial dims ≥ 2.
+  # Waveform input shape after _prepare_input is (48000, 1) — the second dim
+  # is 1, so pooling produces a zero-sized tensor and crashes.
+  # Use birdeep_rnn_waveform below for 1-D sequential waveform data.
 
-  - model: rnn
-    name:  birdeep_rnn_waveform
-    features_dir: data/processed/birdeep_waveform_train
-    params:
-      units:      128
-      n_layers:   2
-      dropout:    0.3
-      epochs:     50
-      batch_size: 32
+  # birdeep_rnn_waveform is intentionally excluded:
+  # Raw PCM at 16 kHz for 3 s produces 48 000-step sequences. A Bidirectional
+  # LSTM must unroll across all 48 000 steps per sample, exhausting the 8 GB
+  # shared memory pool before the first epoch completes (system freeze).
+  # Use birdeep_rnn_mfcc below — MFCC gives a compact ~300-frame sequence.
 
   - model: rnn
     name:  birdeep_rnn_mfcc
@@ -98,7 +90,7 @@ runs:
       units:      128
       n_layers:   2
       dropout:    0.3
-      epochs:     50
+      epochs:     100
       batch_size: 32
 
   - model: transformer
@@ -109,7 +101,7 @@ runs:
       ff_dim:     128
       n_blocks:   2
       dropout:    0.1
-      epochs:     50
+      epochs:     100
       batch_size: 32
 
   - model: transformer
@@ -120,5 +112,5 @@ runs:
       ff_dim:     128
       n_blocks:   2
       dropout:    0.1
-      epochs:     50
+      epochs:     100
       batch_size: 32

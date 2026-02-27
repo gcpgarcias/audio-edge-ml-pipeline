@@ -115,6 +115,11 @@ class KerasTrainer(BaseTrainer):
 
         self._model = self._build_model(X_train.shape[1:], n_classes)
 
+        # Adapt the Normalization layer (always layer index 1: Input → Norm → ...)
+        norm_layer = self._model.layers[1]
+        if hasattr(norm_layer, "adapt"):
+            norm_layer.adapt(X_train)
+
         # Build MLflow epoch callback
         class _MLflowCb(tf.keras.callbacks.Callback):
             def __init__(self, run):
@@ -127,8 +132,51 @@ class KerasTrainer(BaseTrainer):
                 for k, v in logs.items():
                     mlflow.log_metric(k, float(v), step=epoch)
 
+        # Per-epoch progress logger
+        _total_epochs = self.epochs
+        _model_name   = self.name
+
+        class _ProgressCb(tf.keras.callbacks.Callback):
+            def __init__(self):
+                super().__init__()
+                self._prev_lr    = None
+                self._last_epoch = 0
+
+            def on_epoch_end(self, epoch, logs=None):
+                logs = logs or {}
+                self._last_epoch = epoch + 1
+                loss     = logs.get("loss",         float("nan"))
+                acc      = logs.get("accuracy",     float("nan"))
+                val_loss = logs.get("val_loss",     float("nan"))
+                val_acc  = logs.get("val_accuracy", float("nan"))
+
+                try:
+                    current_lr = float(self.model.optimizer.learning_rate)
+                except Exception:
+                    current_lr = None
+
+                lr_tag = ""
+                if current_lr is not None:
+                    if self._prev_lr is not None and current_lr < self._prev_lr - 1e-9:
+                        lr_tag = f"  lr={current_lr:.2e}↓"
+                    self._prev_lr = current_lr
+
+                logger.info(
+                    "[%s] Epoch %3d/%d  loss=%.4f  acc=%.4f  val_loss=%.4f  val_acc=%.4f%s",
+                    _model_name, self._last_epoch, _total_epochs,
+                    loss, acc, val_loss, val_acc, lr_tag,
+                )
+
+            def on_train_end(self, logs=None):
+                if self._last_epoch < _total_epochs:
+                    logger.info(
+                        "[%s] Early stopped at epoch %d/%d",
+                        _model_name, self._last_epoch, _total_epochs,
+                    )
+
         callbacks = [
             _MLflowCb(mlflow_run),
+            _ProgressCb(),
             tf.keras.callbacks.EarlyStopping(
                 monitor="val_loss", patience=10, restore_best_weights=True
             ),
@@ -291,9 +339,13 @@ class CNNTrainer(KerasTrainer):
     name       = "cnn"
     model_type = "deep"
 
-    def __init__(self, filters: list[int] = None, **kwargs):
+    def __init__(self, filters=None, n_blocks: int = None, **kwargs):
         super().__init__(**kwargs)
-        self.filters = filters or [32, 64]
+        if filters is None:
+            filters = [32, 64]
+        if isinstance(filters, int):
+            filters = [filters] * (n_blocks or 2)
+        self.filters = list(filters)
 
     def _prepare_input(self, X: np.ndarray) -> np.ndarray:
         if X.ndim == 2:          # (N, D) flat — shouldn't happen but guard
