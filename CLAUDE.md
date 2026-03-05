@@ -19,9 +19,11 @@ devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
 | 2 | Data transformation | Python (`src/preprocessing/`) | **Done** |
 | 3 | Model training | sklearn + Keras (`src/training/`) | **Done** |
 | 4 | Model evaluation | MLflow local file store (`mlflow/`) | **Done** |
-| 5a | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
-| 6 | Model optimization | LiteRT (`src/optimization/quantize.py`) | Next refactoring |
-| 5b | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
+| 5a | Model selection (pre-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |
+| 6a | Model fine-tuning | sklearn GridSearchCV (`src/training/tune.py`) | **Done** |
+| 5b | Model selection (post-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |
+| 6b | Resource optimization | ONNX + onnxruntime (`src/optimization/`) | **Done** |
+| 5c | Model selection (post-opt) | MLflow + CLI (`src/training/select.py`) | **Done** |
 | 7 | Model compilation | Apache TVM | TODO |
 | 8 | Model deployment | PlatformIO (`src/deployment/edge_simulator.py`) | TODO |
 | 9 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | TODO |
@@ -109,14 +111,16 @@ src/preprocessing/
     └── video_folder_loader.py         # VideoFolderLoader — class-per-subfolder .mp4/.avi/…
 
 config/
-├── feature_extraction.yaml            # Example multi-run config (edit & run with --config)
-└── training.yaml                      # Example multi-model training sweep
+├── feature_extraction.yaml            # Stage 2 — multi-run feature extraction
+├── training.yaml                      # Stage 3 — multi-model training sweep
+└── tuning.yaml                        # Stage 6a — unified search (classical grid + deep random)
 
 src/training/
 ├── dataset.py                         # Legacy shim for old spectrogram format (keep)
 ├── config.py                          # TrainConfig / ModelRunConfig + load_train_config()
 ├── evaluate.py                        # compute_metrics(), save_confusion_matrix_png(), log_run_to_mlflow()
 ├── train.py                           # Stage 3 entry point (flag-based + --config sweep)
+├── tune.py                            # Stage 6a — GridSearchCV (classical) + random search (deep)
 ├── select.py                          # Stage 5 CLI — filter & rank MLflow runs
 └── models/
     ├── __init__.py                    # @register_model, get_model(), list_models() + imports
@@ -212,7 +216,21 @@ Deep:       mlp  cnn  rnn  transformer
 confusion_matrix.png           heatmap
 classification_report.txt      sklearn text report
 model_info.json                {model_name, run_name, val_accuracy, …}
-shortlist.json                 top-N candidates written automatically after sweep
+```
+
+Shortlist files are written to the sweep's **output_dir** (not per-model dirs) and only
+when the sweep contains more than one model:
+
+```text
+data/models/shortlist.json                        convenience alias — overwritten by any new sweep
+data/models/shortlist_<experiment>.json           stable, experiment-scoped — use this downstream
+data/models/tuned/shortlist_<experiment>.json     written by Stage 6a (tune.py)
+```
+
+Always pass the scoped filename to downstream CLIs:
+
+```bash
+--shortlist data/models/shortlist_birdeep-classification.json
 ```
 
 ### Stage 3/4 CLI

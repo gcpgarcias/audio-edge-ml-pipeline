@@ -58,6 +58,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     datefmt="%H:%M:%S",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -204,12 +205,17 @@ def _auto_select(
     metric:       str            = "val_f1_macro",
     min_accuracy: Optional[float] = None,
     top_n:        int            = 5,
+    n_runs:       int            = 1,
 ) -> None:
     """Run pre-opt model selection and write ``shortlist.json`` to *output_dir*.
 
+    Skipped when *n_runs* <= 1 (single-model runs don't need a shortlist).
     Failures are non-fatal — a warning is logged and training is considered
     successful regardless.
     """
+    if n_runs <= 1:
+        logger.debug("Auto-select skipped (single-model run).")
+        return
     from src.training.select import select_preopt, write_shortlist
     try:
         candidates = select_preopt(
@@ -220,8 +226,18 @@ def _auto_select(
             top_n        = top_n,
         )
         if candidates:
+            # Stable, experiment-scoped copy — use this path for downstream stages
+            safe_name = experiment.replace("/", "_").replace(" ", "_")
+            scoped_path = output_dir / f"shortlist_{safe_name}.json"
+            write_shortlist(candidates, scoped_path, experiment, metric)
+            # Generic alias — overwritten by any later sweep; use scoped name for stability
             shortlist_path = output_dir / "shortlist.json"
             write_shortlist(candidates, shortlist_path, experiment, metric)
+            logger.info("Shortlist → %s", scoped_path)
+            logger.warning(
+                "shortlist.json is a convenience alias; it will be overwritten by future sweeps. "
+                "Use shortlist_%s.json for stable references.", safe_name,
+            )
         else:
             logger.warning("Auto-select: no qualifying runs found in experiment '%s'.", experiment)
     except Exception as exc:
@@ -339,6 +355,7 @@ def main(argv: Optional[list[str]] = None) -> None:
                 metric       = cfg.auto_select_metric,
                 min_accuracy = cfg.auto_select_min_accuracy,
                 top_n        = cfg.auto_select_top_n,
+                n_runs       = len(runs),
             )
         return
 
@@ -360,13 +377,6 @@ def main(argv: Optional[list[str]] = None) -> None:
     )
 
     _run_one(run, args.experiment, mlflow_uri=None, max_samples=args.max_samples)
-
-    if not args.no_auto_select:
-        _auto_select(
-            experiment   = args.experiment,
-            mlflow_uri   = None,
-            output_dir   = Path(args.output),
-        )
 
 
 if __name__ == "__main__":

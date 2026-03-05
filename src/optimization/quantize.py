@@ -1,406 +1,295 @@
-import tensorflow as tf
-import numpy as np
-from pathlib import Path
-import json
-import mlflow
-import mlflow.tensorflow
-from datetime import datetime
+"""
+Stage 6b utilities — ONNX conversion and multi-mode quantization.
+
+All functions are pure utilities with no CLI or side effects.
+
+Functions
+---------
+detect_model_type   — infer "sklearn" or "keras" from artifact directory
+find_model_file     — resolve path to .joblib or .keras file
+convert_to_onnx     — sklearn/Keras → ONNX fp32 baseline
+optimize_dynamic_int8
+optimize_static_int8
+optimize_float16
+evaluate_onnx       — run inference, return {accuracy, latency_ms}
+
+Dependencies
+------------
+    pip install onnx skl2onnx onnxruntime onnxconverter-common
+    pip install tf2onnx tensorflow   # only needed for Keras models
+"""
+
+from __future__ import annotations
+
 import logging
 import time
+from pathlib import Path
+from typing import Literal, Optional
 
-logging.basicConfig(level=logging.INFO)
+import joblib
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
-class ModelOptimizer:
-    def __init__(self, model_path: str, test_data_dir: str):
-        self.model_path = Path(model_path)
-        self.test_data_dir = Path(test_data_dir)
-        self.model = None
-        self.test_data = None
-        
-    def load_model(self):
-        """Load the trained Keras model."""
-        logger.info(f"Loading model from {self.model_path}")
-        self.model = tf.keras.models.load_model(self.model_path)
-        return self.model
-    
-    def load_test_data(self, num_samples: int = 100):
-        """Load test spectrograms for calibration and evaluation."""
-        logger.info(f"Loading test data from {self.test_data_dir}")
-        
-        metadata_files = list(self.test_data_dir.glob("*.json"))[:num_samples]
-        spectrograms = []
-        labels = []
-        
-        for metadata_path in metadata_files:
-            with open(metadata_path) as f:
-                metadata = json.load(f)
-            
-            processed_path = Path(metadata.get("processed_path"))
-            if not processed_path.exists():
-                continue
-            
-            spectrogram = np.load(processed_path)
-            spectrograms.append(spectrogram)
-            labels.append(metadata["label"])
-        
-        # Add channel dimension
-        self.test_data = np.array(spectrograms)[..., np.newaxis].astype(np.float32)
-        self.test_labels = labels
-        
-        logger.info(f"Loaded {len(self.test_data)} test samples")
-        return self.test_data
-    
-    def representative_dataset_gen(self):
-        """Generator for representative dataset used in quantization calibration."""
-        for sample in self.test_data:
-            yield [np.expand_dims(sample, axis=0)]
-    
-    def convert_to_tflite(
-        self,
-        output_path: Path,
-        quantize: bool = True,
-        optimization_mode: str = "full"
-    ):
-        """
-        Convert Keras model to TFLite format with optional quantization.
-        
-        Args:
-            output_path: Path to save the TFLite model
-            quantize: Whether to apply quantization
-            optimization_mode: 'none', 'dynamic', 'float16', or 'full' (int8)
-        """
-        logger.info(f"Converting model to TFLite (mode: {optimization_mode})")
-        start_time = time.time()
-        
-        converter = tf.lite.TFLiteConverter.from_keras_model(self.model)
-        
-        if quantize:
-            if optimization_mode == "dynamic":
-                # Dynamic range quantization (weights only)
-                converter.optimizations = [tf.lite.Optimize.DEFAULT]
-                
-            elif optimization_mode == "float16":
-                # Float16 quantization
-                converter.optimizations = [tf.lite.Optimize.DEFAULT]
-                converter.target_spec.supported_types = [tf.float16]
-                
-            elif optimization_mode == "full":
-                # Full integer quantization (weights and activations)
-                converter.optimizations = [tf.lite.Optimize.DEFAULT]
-                converter.representative_dataset = self.representative_dataset_gen
-                converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
-                converter.inference_input_type = tf.int8
-                converter.inference_output_type = tf.int8
-        
-        # Convert model
-        tflite_model = converter.convert()
-        conversion_time = time.time() - start_time
-        
-        # Save TFLite model
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(output_path, 'wb') as f:
-            f.write(tflite_model)
-        
-        model_size = output_path.stat().st_size
-        logger.info(f"TFLite model saved to {output_path}")
-        logger.info(f"Model size: {model_size / 1024:.2f} KB")
-        logger.info(f"Conversion time: {conversion_time:.2f} seconds")
-        
-        return tflite_model, model_size, conversion_time
-    
-    def evaluate_tflite_model(self, tflite_model_path: Path, num_samples: int = None):
-        """Evaluate TFLite model accuracy and inference speed."""
-        logger.info(f"Evaluating TFLite model: {tflite_model_path}")
-        
-        # Load TFLite model
-        interpreter = tf.lite.Interpreter(model_path=str(tflite_model_path))
-        interpreter.allocate_tensors()
-        
-        # Get input and output details
-        input_details = interpreter.get_input_details()
-        output_details = interpreter.get_output_details()
-        
-        # Check if model uses int8 quantization
-        input_scale, input_zero_point = input_details[0]['quantization']
-        output_scale, output_zero_point = output_details[0]['quantization']
-        is_quantized = input_scale != 0.0
-        
-        logger.info(f"Model quantization: {'INT8' if is_quantized else 'FLOAT32'}")
-        
-        # Evaluate on test data
-        if num_samples is None:
-            num_samples = len(self.test_data)
-        
-        correct = 0
-        inference_times = []
-        
-        # Load class names for comparison
-        class_names_path = Path("data/models/class_names.json")
-        with open(class_names_path) as f:
-            class_names = json.load(f)
-        
-        label_to_idx = {label: idx for idx, label in enumerate(class_names)}
-        
-        for i in range(min(num_samples, len(self.test_data))):
-            # Prepare input
-            input_data = np.expand_dims(self.test_data[i], axis=0)
-            
-            if is_quantized:
-                # Quantize input
-                input_data = input_data / input_scale + input_zero_point
-                input_data = input_data.astype(input_details[0]['dtype'])
-            
-            # Run inference
-            interpreter.set_tensor(input_details[0]['index'], input_data)
-            
-            start_time = time.time()
-            interpreter.invoke()
-            inference_time = time.time() - start_time
-            inference_times.append(inference_time)
-            
-            # Get output
-            output_data = interpreter.get_tensor(output_details[0]['index'])
-            
-            if is_quantized:
-                # Dequantize output
-                output_data = (output_data.astype(np.float32) - output_zero_point) * output_scale
-            
-            # Get prediction
-            predicted_idx = np.argmax(output_data[0])
-            true_idx = label_to_idx[self.test_labels[i]]
-            
-            if predicted_idx == true_idx:
-                correct += 1
-        
-        accuracy = correct / num_samples
-        avg_inference_time = np.mean(inference_times) * 1000  # Convert to ms
-        std_inference_time = np.std(inference_times) * 1000
-        
-        logger.info(f"Accuracy: {accuracy:.4f} ({correct}/{num_samples})")
-        logger.info(f"Avg inference time: {avg_inference_time:.2f} ms (±{std_inference_time:.2f} ms)")
-        
-        return {
-            "accuracy": accuracy,
-            "avg_inference_time_ms": avg_inference_time,
-            "std_inference_time_ms": std_inference_time,
-            "is_quantized": is_quantized
-        }
-    
-    def compare_models(self, original_model_path: Path, tflite_model_path: Path):
-        """Compare original and optimized models."""
-        logger.info("\n" + "="*60)
-        logger.info("MODEL COMPARISON")
-        logger.info("="*60)
-        
-        # Original model evaluation
-        logger.info("\nEvaluating original Keras model...")
-        original_model = tf.keras.models.load_model(original_model_path)
-        
-        # Prepare test data for Keras evaluation
-        test_data = self.test_data
-        
-        # Load class names
-        class_names_path = Path("data/models/class_names.json")
-        with open(class_names_path) as f:
-            class_names = json.load(f)
-        label_to_idx = {label: idx for idx, label in enumerate(class_names)}
-        test_labels_idx = np.array([label_to_idx[label] for label in self.test_labels])
-        
-        # Original model inference
-        original_times = []
-        for sample in test_data[:100]:
-            start = time.time()
-            _ = original_model.predict(np.expand_dims(sample, axis=0), verbose=0)
-            original_times.append(time.time() - start)
-        
-        original_predictions = original_model.predict(test_data, verbose=0)
-        original_accuracy = np.mean(np.argmax(original_predictions, axis=1) == test_labels_idx)
-        original_inference_time = np.mean(original_times) * 1000
-        
-        # TFLite model evaluation
-        logger.info("\nEvaluating TFLite model...")
-        tflite_results = self.evaluate_tflite_model(tflite_model_path, num_samples=100)
-        
-        # Size comparison
-        original_size = original_model_path.stat().st_size / 1024
-        tflite_size = tflite_model_path.stat().st_size / 1024
-        size_reduction = ((original_size - tflite_size) / original_size) * 100
-        
-        comparison = {
-            "original_model": {
-                "size_kb": original_size,
-                "accuracy": float(original_accuracy),
-                "avg_inference_time_ms": original_inference_time
-            },
-            "tflite_model": {
-                "size_kb": tflite_size,
-                "accuracy": tflite_results["accuracy"],
-                "avg_inference_time_ms": tflite_results["avg_inference_time_ms"],
-                "is_quantized": tflite_results["is_quantized"]
-            },
-            "improvements": {
-                "size_reduction_percent": size_reduction,
-                "size_reduction_ratio": f"{original_size/tflite_size:.1f}x",
-                "accuracy_loss_percent": (original_accuracy - tflite_results["accuracy"]) * 100,
-                "speedup_ratio": f"{original_inference_time/tflite_results['avg_inference_time_ms']:.1f}x"
-            }
-        }
-        
-        # Print comparison
-        logger.info("\nORIGINAL KERAS MODEL:")
-        logger.info(f"  Size: {original_size:.2f} KB")
-        logger.info(f"  Accuracy: {original_accuracy:.4f}")
-        logger.info(f"  Inference time: {original_inference_time:.2f} ms")
-        
-        logger.info("\nOPTIMIZED TFLITE MODEL:")
-        logger.info(f"  Size: {tflite_size:.2f} KB")
-        logger.info(f"  Accuracy: {tflite_results['accuracy']:.4f}")
-        logger.info(f"  Inference time: {tflite_results['avg_inference_time_ms']:.2f} ms")
-        logger.info(f"  Quantization: {'INT8' if tflite_results['is_quantized'] else 'FLOAT32'}")
-        
-        logger.info("\nIMPROVEMENTS:")
-        logger.info(f"  Size reduction: {size_reduction:.1f}% ({comparison['improvements']['size_reduction_ratio']})")
-        logger.info(f"  Accuracy loss: {comparison['improvements']['accuracy_loss_percent']:.2f}%")
-        logger.info(f"  Speed improvement: {comparison['improvements']['speedup_ratio']}")
-        logger.info("="*60 + "\n")
-        
-        return comparison
 
-def optimize_model_with_mlflow(
-    model_path: str = "data/models/audio_classifier.h5",
-    data_dir: str = "data/processed/spectrograms",
-    experiment_name: str = "model-optimization"
-):
-    """Main optimization function with MLflow tracking."""
-    
-    mlflow.set_tracking_uri("http://localhost:5000")
-    mlflow.set_experiment(experiment_name)
-    
-    with mlflow.start_run(run_name=f"optimization_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
-        
-        # Initialize optimizer
-        optimizer = ModelOptimizer(model_path, data_dir)
-        
-        # Load model and test data
-        model = optimizer.load_model()
-        test_data = optimizer.load_test_data(num_samples=100)
-        
-        # Log original model info
-        original_size = Path(model_path).stat().st_size
-        mlflow.log_param("original_model_size_bytes", original_size)
-        mlflow.log_param("original_model_size_kb", original_size / 1024)
-        
-        # Test different optimization strategies
-        optimization_modes = [
-            ("float32", False, "none"),
-            ("dynamic", True, "dynamic"),
-            ("float16", True, "float16"),
-            ("int8", True, "full")
-        ]
-        
-        results = {}
-        
-        for mode_name, quantize, opt_mode in optimization_modes:
-            logger.info(f"\n{'='*60}")
-            logger.info(f"Testing optimization mode: {mode_name}")
-            logger.info(f"{'='*60}")
-            
-            output_path = Path(f"data/models/audio_classifier_{mode_name}.tflite")
-            
-            # Convert model
-            tflite_model, model_size, conversion_time = optimizer.convert_to_tflite(
-                output_path,
-                quantize=quantize,
-                optimization_mode=opt_mode
-            )
-            
-            # Evaluate model
-            eval_results = optimizer.evaluate_tflite_model(output_path, num_samples=100)
-            
-            # Calculate metrics
-            size_reduction = ((original_size - model_size) / original_size) * 100
-            compression_ratio = original_size / model_size
-            
-            # Log to MLflow
-            mlflow.log_metric(f"{mode_name}_model_size_kb", model_size / 1024)
-            mlflow.log_metric(f"{mode_name}_size_reduction_percent", size_reduction)
-            mlflow.log_metric(f"{mode_name}_compression_ratio", compression_ratio)
-            mlflow.log_metric(f"{mode_name}_accuracy", eval_results["accuracy"])
-            mlflow.log_metric(f"{mode_name}_inference_time_ms", eval_results["avg_inference_time_ms"])
-            mlflow.log_metric(f"{mode_name}_conversion_time_seconds", conversion_time)
-            
-            # Log model artifact
-            mlflow.log_artifact(str(output_path))
-            
-            results[mode_name] = {
-                "model_path": str(output_path),
-                "size_kb": model_size / 1024,
-                "size_reduction_percent": size_reduction,
-                "compression_ratio": compression_ratio,
-                "accuracy": eval_results["accuracy"],
-                "inference_time_ms": eval_results["avg_inference_time_ms"],
-                "conversion_time_seconds": conversion_time,
-                "is_quantized": eval_results["is_quantized"]
-            }
-        
-        # Save results summary
-        results_path = Path("data/models/optimization_results.json")
-        with open(results_path, "w") as f:
-            json.dump(results, f, indent=2)
-        
-        mlflow.log_artifact(str(results_path))
-        
-        # Compare best quantized model with original
-        logger.info("\n" + "="*60)
-        logger.info("FINAL COMPARISON: Original vs INT8 Quantized")
-        logger.info("="*60)
-        
-        comparison = optimizer.compare_models(
-            Path(model_path),
-            Path(f"data/models/audio_classifier_int8.tflite")
-        )
-        
-        comparison_path = Path("data/models/model_comparison.json")
-        with open(comparison_path, "w") as f:
-            json.dump(comparison, f, indent=2)
-        
-        mlflow.log_artifact(str(comparison_path))
-        
-        # Log best model metrics
-        mlflow.log_metric("best_size_reduction_percent", 
-                         comparison["improvements"]["size_reduction_percent"])
-        mlflow.log_metric("best_accuracy_loss_percent",
-                         comparison["improvements"]["accuracy_loss_percent"])
-        
-        logger.info("\nOptimization complete! Check MLflow UI for detailed metrics.")
-        
-        return results, comparison
+# ---------------------------------------------------------------------------
+# Model discovery
+# ---------------------------------------------------------------------------
 
-def main():
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Optimize trained model for edge deployment")
-    parser.add_argument("--model-path", type=str, default="data/models/audio_classifier.h5")
-    parser.add_argument("--data-dir", type=str, default="data/processed/spectrograms")
-    parser.add_argument("--experiment-name", type=str, default="model-optimization")
-    
-    args = parser.parse_args()
-    
-    results, comparison = optimize_model_with_mlflow(
-        model_path=args.model_path,
-        data_dir=args.data_dir,
-        experiment_name=args.experiment_name
+def detect_model_type(
+    artifact_uri: str,
+    model_name: str,
+) -> Literal["sklearn", "keras"]:
+    """Return ``'sklearn'`` or ``'keras'`` based on files present in *artifact_uri*.
+
+    Raises ``FileNotFoundError`` if neither ``.joblib`` nor ``.keras`` is found.
+    """
+    base = Path(artifact_uri)
+    if (base / f"{model_name}.joblib").exists():
+        return "sklearn"
+    for suffix in (f"{model_name}.keras", "model.keras"):
+        if (base / suffix).exists():
+            return "keras"
+    raise FileNotFoundError(
+        f"No model file found for '{model_name}' in {artifact_uri}. "
+        f"Expected {model_name}.joblib or *.keras"
     )
-    
-    print("\n" + "="*60)
-    print("OPTIMIZATION SUMMARY")
-    print("="*60)
-    for mode, metrics in results.items():
-        print(f"\n{mode.upper()}:")
-        print(f"  Size: {metrics['size_kb']:.2f} KB ({metrics['size_reduction_percent']:.1f}% reduction)")
-        print(f"  Accuracy: {metrics['accuracy']:.4f}")
-        print(f"  Inference: {metrics['inference_time_ms']:.2f} ms")
 
-if __name__ == "__main__":
-    main()
+
+def find_model_file(artifact_uri: str, model_name: str) -> Path:
+    """Return the resolved path to the model file inside *artifact_uri*."""
+    base = Path(artifact_uri)
+    candidates = [
+        base / f"{model_name}.joblib",
+        base / f"{model_name}.keras",
+        base / "model.keras",
+    ]
+    for p in candidates:
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        f"No model file found for '{model_name}' in {artifact_uri}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# ONNX conversion
+# ---------------------------------------------------------------------------
+
+def convert_to_onnx(
+    model_path: Path,
+    n_features: int,
+    output_path: Path,
+) -> Path:
+    """Convert a sklearn ``.joblib`` or Keras model to ONNX (fp32 baseline).
+
+    Parameters
+    ----------
+    model_path:
+        Path to ``.joblib`` (sklearn) or ``.keras`` / ``.h5`` (Keras).
+    n_features:
+        Number of input features (after flattening).  Used only for sklearn.
+    output_path:
+        Destination ``.onnx`` file path.
+    """
+    try:
+        import onnx  # noqa: F401 — verify onnx is installed early
+    except ImportError:
+        raise ImportError("pip install onnx")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model_path = Path(model_path)
+
+    if model_path.suffix == ".joblib":
+        try:
+            from skl2onnx import convert_sklearn
+            from skl2onnx.common.data_types import FloatTensorType
+        except ImportError:
+            raise ImportError("pip install skl2onnx")
+
+        model = joblib.load(model_path)
+        initial_types = [("float_input", FloatTensorType([None, n_features]))]
+        options = {type(model): {"zipmap": False}}
+        try:
+            onnx_model = convert_sklearn(
+                model,
+                initial_types=initial_types,
+                options=options,
+            )
+        except Exception:
+            # Some Pipeline wrappers reject per-type options — retry without
+            onnx_model = convert_sklearn(model, initial_types=initial_types)
+
+        output_path.write_bytes(onnx_model.SerializeToString())
+
+    elif model_path.suffix in (".keras", ".h5"):
+        try:
+            import tensorflow as tf
+            import tf2onnx.convert
+        except ImportError:
+            raise ImportError("pip install tf2onnx tensorflow")
+
+        model = tf.keras.models.load_model(model_path)
+        import onnx as _onnx
+        onnx_model, _ = tf2onnx.convert.from_keras(model, opset=13)
+        _onnx.save(onnx_model, str(output_path))
+
+    else:
+        raise ValueError(f"Unsupported model file extension: {model_path.suffix}")
+
+    size_kb = output_path.stat().st_size / 1024
+    logger.info("ONNX fp32  → %s  (%.1f KB)", output_path.name, size_kb)
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Optimization modes
+# ---------------------------------------------------------------------------
+
+def optimize_dynamic_int8(onnx_path: Path, output_path: Path) -> Path:
+    """Dynamic INT8 quantization — weights only, no calibration data needed."""
+    try:
+        from onnxruntime.quantization import quantize_dynamic, QuantType
+    except ImportError:
+        raise ImportError("pip install onnxruntime")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    quantize_dynamic(
+        model_input=str(onnx_path),
+        model_output=str(output_path),
+        weight_type=QuantType.QInt8,
+    )
+    logger.info("Dynamic INT8 → %s  (%.1f KB)", output_path.name, output_path.stat().st_size / 1024)
+    return output_path
+
+
+def optimize_static_int8(
+    onnx_path: Path,
+    output_path: Path,
+    X_calib: np.ndarray,
+) -> Path:
+    """Static INT8 quantization — calibrates activations with up to 50 samples."""
+    try:
+        from onnxruntime.quantization import (
+            quantize_static,
+            QuantType,
+            CalibrationDataReader,
+        )
+    except ImportError:
+        raise ImportError("pip install onnxruntime")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    calib = X_calib[:50].astype(np.float32)
+
+    class _Reader(CalibrationDataReader):
+        def __init__(self, data: np.ndarray) -> None:
+            self._data = data
+            self._idx = 0
+
+        def get_next(self):
+            if self._idx >= len(self._data):
+                return None
+            row = {"float_input": self._data[self._idx : self._idx + 1]}
+            self._idx += 1
+            return row
+
+    quantize_static(
+        model_input=str(onnx_path),
+        model_output=str(output_path),
+        calibration_data_reader=_Reader(calib),
+        weight_type=QuantType.QInt8,
+    )
+    logger.info("Static INT8  → %s  (%.1f KB)", output_path.name, output_path.stat().st_size / 1024)
+    return output_path
+
+
+def optimize_float16(onnx_path: Path, output_path: Path) -> Path:
+    """Float16 weight conversion."""
+    try:
+        import onnx
+        from onnxconverter_common import float16 as onnx_fp16
+    except ImportError:
+        raise ImportError("pip install onnx onnxconverter-common")
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    model = onnx.load(str(onnx_path))
+    model_fp16 = onnx_fp16.convert_float_to_float16(model)
+    onnx.save(model_fp16, str(output_path))
+    logger.info("Float16      → %s  (%.1f KB)", output_path.name, output_path.stat().st_size / 1024)
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_onnx(
+    onnx_path: Path,
+    X: np.ndarray,
+    y: np.ndarray,
+    label_names: Optional[list] = None,
+) -> dict:
+    """Run inference with onnxruntime; return ``{accuracy, latency_ms}``.
+
+    Parameters
+    ----------
+    onnx_path:
+        Path to the ``.onnx`` model file.
+    X:
+        Float32 feature matrix, shape ``(N, n_features)``.
+    y:
+        Integer class indices, shape ``(N,)``.
+    label_names:
+        Required only when the ONNX model outputs string class labels.
+
+    Returns
+    -------
+    dict with keys ``accuracy`` (float) and ``latency_ms`` (mean per-sample ms).
+    """
+    try:
+        import onnxruntime as ort
+    except ImportError:
+        raise ImportError("pip install onnxruntime")
+
+    sess = ort.InferenceSession(
+        str(onnx_path),
+        providers=["CPUExecutionProvider"],
+    )
+    input_name = sess.get_inputs()[0].name
+    X_f = X.astype(np.float32)
+    N = len(X_f)
+
+    # Warm-up pass
+    sess.run(None, {input_name: X_f[:1]})
+
+    t0 = time.perf_counter()
+    outputs = sess.run(None, {input_name: X_f})
+    elapsed = time.perf_counter() - t0
+    latency_ms = elapsed / N * 1000.0
+
+    first_out = outputs[0]
+    if first_out.ndim == 2:
+        # Keras-style: (N, n_classes) → argmax
+        y_pred = np.argmax(first_out, axis=1).astype(np.int64)
+    else:
+        # sklearn-style: (N,) class labels (int64 or string)
+        if first_out.dtype.kind in ("U", "S", "O"):
+            if label_names is None:
+                raise ValueError(
+                    "label_names required to decode string ONNX output labels"
+                )
+            name_to_idx = {n: i for i, n in enumerate(label_names)}
+            y_pred = np.array(
+                [name_to_idx.get(str(lbl), -1) for lbl in first_out],
+                dtype=np.int64,
+            )
+        else:
+            y_pred = first_out.astype(np.int64)
+
+    accuracy = float(np.mean(y_pred == y.astype(np.int64)))
+    return {"accuracy": accuracy, "latency_ms": latency_ms}

@@ -87,6 +87,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
     datefmt="%H:%M:%S",
+    force=True,
 )
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,7 @@ logger = logging.getLogger(__name__)
 
 def _setup_mlflow(uri: Optional[str]):
     import mlflow
-    tracking_uri = uri or os.getenv("MLFLOW_TRACKING_URI", "mlflow/")
+    tracking_uri = uri or os.getenv("MLFLOW_TRACKING_URI", "mlruns/")
     mlflow.set_tracking_uri(tracking_uri)
     return mlflow
 
