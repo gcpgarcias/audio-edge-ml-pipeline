@@ -12,20 +12,8 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-9-classes-tuning-smoketest-4
+experiment:  fsc22-9-classes-tuning-smoketest-2
 mlflow_uri:  mlruns/
-class_filter:
-  - Fire
-  - Thunderstorm
-  - WaterDrops
-  - Silence
-  - Helicopter
-  - Gunshot
-  - Chainsaw
-  - Handsaw
-  - WoodChop
-
-
 val_split:   0.2
 
 # Classical-specific defaults
@@ -34,7 +22,7 @@ scoring: f1_macro
 
 # Deep-specific defaults (Optuna TPE search)
 n_trials:     50    # Optuna trials per deep run
-sweep_epochs: 50    # max epochs per trial
+sweep_epochs: 30    # max epochs per trial
 seed:         42
 pruner:       hyperband   # median | hyperband | none
 
@@ -63,7 +51,7 @@ runs:
   # ── Classical ML ──────────────────────────────────────────────────────────
 
   - model:        lda
-    name:         fsc22_9_classes_lda_sweep_smoketest_4
+    name:         fsc22_9_classes_lda_sweep_smoketest_2
     features_dir: data/processed/fsc22_classical_train
     grid:
       solver: [svd, lsqr]
@@ -110,7 +98,7 @@ runs:
   # ── Deep models ───────────────────────────────────────────────────────────
 
   - model:        mlp
-    name:         fsc22_9_classes_mlp_sweep_smoketest_4
+    name:         fsc22_9_classes_mlp_sweep_smoketest_2
     features_dir: data/processed/fsc22_classical_train
     search_space:
       hidden_units:  [[64, 32], [128, 64], [256, 128], [512, 256], [256, 128, 64]]

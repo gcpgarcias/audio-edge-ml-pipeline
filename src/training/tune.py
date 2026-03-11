@@ -3,7 +3,7 @@ Stage 6a — Model fine-tuning via hyperparameter search.
 
 Dispatches automatically by model type:
   • Classical (sklearn) → GridSearchCV with stratified k-fold CV
-  • Deep (Keras)        → Random search over a discrete search_space
+  • Deep (Keras)        → Optuna TPE search with optional trial pruning
 
 Reads a single YAML config with a ``runs:`` list. Each run specifies either
 ``grid:`` (classical) or ``search_space:`` (deep). The dispatcher resolves the
@@ -27,9 +27,10 @@ Config schema
     scoring: f1_macro
 
     # Deep defaults
-    n_trials:     10
-    sweep_epochs: 25
+    n_trials:     20          # Optuna trials per deep run
+    sweep_epochs: 25          # epochs per trial
     seed:         42
+    pruner:       median      # median | hyperband | none
 
     # Optional: restrict to models listed in a prior shortlist
     # shortlist: data/models/shortlist_birdeep-classification.json
@@ -41,15 +42,22 @@ Config schema
         grid:
           solver: [svd, lsqr]
 
-      # Deep — search_space: key triggers random search
+      # Deep — search_space: key triggers Optuna TPE search.
+      # Each param accepts either:
+      #   a plain list  → treated as categorical choices (backward-compatible)
+      #   a dict        → Optuna distribution:
+      #     {type: categorical, choices: [...]}
+      #     {type: float,       low: 0.1,   high: 0.5}        (uniform)
+      #     {type: loguniform,  low: 1e-4,  high: 1e-2}       (log-uniform)
+      #     {type: int,         low: 1,     high: 10}
       - model:        mlp
         name:         birdeep_mlp_sweep
         features_dir: data/processed/birdeep_classical_train
         search_space:
           hidden_units:  [[64, 32], [128, 64], [256, 128]]
-          dropout:       [0.2, 0.3, 0.4]
-          batch_size:    [16, 32, 64]
-          learning_rate: [0.001, 0.0005, 0.0001]
+          dropout:       {type: float,      low: 0.1, high: 0.5}
+          batch_size:    {type: categorical, choices: [16, 32, 64]}
+          learning_rate: {type: loguniform,  low: 0.00005, high: 0.01}
 
 Output layout (``output_dir/<run_name>/``)
 -------------------------------------------
@@ -65,7 +73,7 @@ import json
 import logging
 import math
 import os
-import random
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -147,6 +155,35 @@ def _remap_param_grid(model_name: str, param_grid: dict) -> dict:
     return {mapping.get(k, k): v for k, v in param_grid.items()}
 
 
+def _apply_class_filter(
+    X: np.ndarray,
+    y: np.ndarray,
+    label_names: list,
+    class_filter: Optional[list],
+    run_label: str,
+) -> tuple:
+    """Restrict X/y/label_names to the requested classes, remapping labels to 0..N-1."""
+    if not class_filter:
+        return X, y, label_names
+    filter_set = set(class_filter)
+    allowed_indices = [i for i, n in enumerate(label_names) if n in filter_set]
+    if not allowed_indices:
+        raise ValueError(
+            f"[{run_label}] class_filter {sorted(filter_set)} matched no classes in "
+            f"{label_names}"
+        )
+    missing = filter_set - {label_names[i] for i in allowed_indices}
+    if missing:
+        logger.warning("[%s] class_filter: classes not found in dataset: %s", run_label, sorted(missing))
+    mask = np.isin(y, allowed_indices)
+    X, y = X[mask], y[mask]
+    idx_map = {old: new for new, old in enumerate(allowed_indices)}
+    y = np.array([idx_map[lbl] for lbl in y], dtype=y.dtype)
+    label_names = [label_names[i] for i in allowed_indices]
+    logger.info("[%s] class_filter applied — %d classes, %d samples", run_label, len(label_names), len(X))
+    return X, y, label_names
+
+
 def _tune_classical(
     run_cfg:     dict,
     default_cfg: dict,
@@ -163,6 +200,7 @@ def _tune_classical(
     cv           = int(run_cfg.get("cv")            or default_cfg.get("cv", 5))
     scoring      = str(run_cfg.get("scoring")       or default_cfg.get("scoring", "f1_macro"))
     param_grid   = run_cfg.get("grid") or {}
+    class_filter = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
 
     logger.info("[%s] Loading features from %s", run_label, features_dir)
     feature_set = FeaturePipeline.load(features_dir)
@@ -172,6 +210,8 @@ def _tune_classical(
     if y is None:
         logger.error("[%s] FeatureSet has no labels — skipping.", run_label)
         return None
+
+    X, y, label_names = _apply_class_filter(X, y, label_names, class_filter, run_label)
 
     X_flat = X.reshape(len(X), -1).astype(np.float32)
     try:
@@ -269,19 +309,74 @@ def _tune_classical(
 
 
 # ---------------------------------------------------------------------------
-# Deep — Random search
+# Deep — Optuna TPE search
 # ---------------------------------------------------------------------------
 
-def _sample_params(search_space: dict, rng: random.Random) -> dict:
-    return {k: rng.choice(v) for k, v in search_space.items()}
+def _sample_optuna_params(trial, search_space: dict) -> dict:
+    """Translate a search_space dict into Optuna suggest_* calls.
+
+    Each value in *search_space* may be:
+
+    * a plain ``list``  → ``suggest_categorical`` (backward-compatible)
+    * a ``dict`` with ``type`` key:
+
+      - ``categorical``  requires ``choices: [...]``
+      - ``float``        requires ``low``, ``high``; optional ``step``
+      - ``loguniform``   requires ``low``, ``high``  (log-uniform float)
+      - ``int``          requires ``low``, ``high``; optional ``step``
+    """
+    def _suggest_categorical(key, choices):
+        """Suggest a categorical value, encoding non-primitive choices as JSON strings."""
+        encoded = [json.dumps(c) if isinstance(c, (list, tuple)) else c for c in choices]
+        value = trial.suggest_categorical(key, tuple(encoded))
+        # Decode back to list if it was encoded
+        if isinstance(value, str):
+            try:
+                decoded = json.loads(value)
+                if isinstance(decoded, list):
+                    return decoded
+            except (ValueError, TypeError):
+                pass
+        return value
+
+    params: dict = {}
+    for key, spec in search_space.items():
+        if isinstance(spec, list):
+            params[key] = _suggest_categorical(key, spec)
+        elif isinstance(spec, dict):
+            kind = str(spec.get("type", "categorical")).lower()
+            if kind == "categorical":
+                params[key] = _suggest_categorical(key, spec["choices"])
+            elif kind in ("float", "uniform"):
+                params[key] = trial.suggest_float(
+                    key, spec["low"], spec["high"], step=spec.get("step")
+                )
+            elif kind == "loguniform":
+                params[key] = trial.suggest_float(
+                    key, spec["low"], spec["high"], log=True
+                )
+            elif kind == "int":
+                params[key] = trial.suggest_int(
+                    key, spec["low"], spec["high"], step=int(spec.get("step", 1))
+                )
+            else:
+                raise ValueError(
+                    f"Unknown search_space type {kind!r} for '{key}'. "
+                    "Valid: categorical, float, loguniform, int."
+                )
+        else:
+            raise ValueError(f"Invalid search_space spec for '{key}': {spec!r}")
+    return params
 
 
-def _sweep_deep(
+def _tune_deep_optuna(
     run_cfg:     dict,
     default_cfg: dict,
     mlflow_module,
 ) -> Optional[dict]:
-    """Random search for one deep model run. Returns the best trial dict or None."""
+    """Optuna TPE search for one deep model run. Returns the best trial dict or None."""
+    import optuna
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
     from sklearn.model_selection import train_test_split
 
     model_name   = run_cfg["model"]
@@ -289,10 +384,12 @@ def _sweep_deep(
     features_dir = Path(run_cfg.get("features_dir") or default_cfg.get("features_dir", ""))
     output_dir   = Path(run_cfg.get("output_dir")   or default_cfg["output_dir"]) / run_label
     val_split    = float(run_cfg.get("val_split")   or default_cfg.get("val_split", 0.2))
-    n_trials     = int(run_cfg.get("n_trials")      or default_cfg.get("n_trials", 10))
+    n_trials     = int(run_cfg.get("n_trials")      or default_cfg.get("n_trials", 20))
     sweep_epochs = int(run_cfg.get("sweep_epochs")  or default_cfg.get("sweep_epochs", 25))
     seed         = int(default_cfg.get("seed", 42))
+    pruner_name  = str(run_cfg.get("pruner") or default_cfg.get("pruner", "median")).lower()
     search_space = run_cfg.get("search_space") or {}
+    class_filter = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
 
     logger.info("[%s] Loading features from %s", run_label, features_dir)
     feature_set = FeaturePipeline.load(features_dir)
@@ -302,6 +399,8 @@ def _sweep_deep(
     if y is None:
         logger.error("[%s] FeatureSet has no labels — skipping.", run_label)
         return None
+
+    X, y, label_names = _apply_class_filter(X, y, label_names, class_filter, run_label)
 
     logger.info(
         "[%s] %d samples  %d classes  shape %s",
@@ -317,95 +416,130 @@ def _sweep_deep(
             X, y, test_size=val_split, random_state=seed
         )
 
-    if search_space:
-        space_size = 1
-        for v in search_space.values():
-            space_size *= len(v)
-        logger.info(
-            "[%s] Search space: %d combinations  running %d random trial(s)",
-            run_label, space_size, n_trials,
-        )
-    else:
-        logger.info("[%s] No search_space — 1 trial with defaults.", run_label)
-        n_trials = 1
-
-    rng           = random.Random(seed)
-    best_score    = -1.0
-    best_result   = None
-    trial_results = []
-
-    for trial_idx in range(n_trials):
-        sampled        = _sample_params(search_space, rng) if search_space else {}
-        trial_run_name = (
-            f"{run_label}_trial{trial_idx:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        )
-        trial_dir = output_dir / f"trial_{trial_idx:02d}"
-
-        logger.info("─" * 56)
-        logger.info("[%s] Trial %d/%d  %s", run_label, trial_idx + 1, n_trials, sampled)
-
+    # Keras pruning callback (optional — degrades gracefully if not installed)
+    _PruningCb = None
+    try:
+        from optuna_integration.keras import KerasPruningCallback as _PruningCb
+    except ImportError:
         try:
-            trainer_cls = get_model(model_name)
-            trainer     = trainer_cls(epochs=sweep_epochs, **sampled)
+            from optuna.integration.keras import KerasPruningCallback as _PruningCb
+        except ImportError:
+            logger.debug("[%s] KerasPruningCallback unavailable — mid-trial pruning disabled.", run_label)
 
-            with mlflow_module.start_run(run_name=trial_run_name) as active_run:
-                result = trainer.fit(
-                    X_train, y_train,
-                    X_val, y_val,
-                    label_names = label_names,
-                    run_name    = trial_run_name,
-                    output_dir  = trial_dir,
-                    mlflow_run  = active_run,
-                )
+    pruner_map = {
+        "median":    lambda: optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=10),
+        "hyperband": lambda: optuna.pruners.HyperbandPruner(),
+        "none":      lambda: optuna.pruners.NopPruner(),
+        "nop":       lambda: optuna.pruners.NopPruner(),
+    }
+    pruner = pruner_map.get(pruner_name, pruner_map["median"])()
 
-            score = result.metrics.get("val_f1_macro", 0.0)
-            logger.info(
-                "[%s] Trial %d  val_accuracy=%.4f  val_f1_macro=%.4f",
-                run_label, trial_idx + 1,
-                result.metrics.get("val_accuracy", float("nan")), score,
-            )
-
-            trial_record = {
-                "trial":         trial_idx,
-                "run_id":        result.run_id,
-                "run_name":      trial_run_name,
-                "model":         model_name,
-                "val_accuracy":  result.metrics.get("val_accuracy",  0.0),
-                "val_f1_macro":  score,
-                "cv_best_score": None,
-                "model_size_kb": result.model_size_kb,
-                "best_params":   {k: str(v) for k, v in sampled.items()},
-                "artifact_uri":  str(trial_dir),
-            }
-            trial_results.append(trial_record)
-
-            if score > best_score:
-                best_score  = score
-                best_result = trial_record
-
-        except Exception as exc:
-            logger.error(
-                "[%s] Trial %d failed: %s", run_label, trial_idx + 1, exc, exc_info=True
-            )
-
-    if best_result is None:
-        logger.error("[%s] All trials failed.", run_label)
-        return None
-
-    logger.info(
-        "[%s] Best trial %d  val_f1_macro=%.4f  params=%s",
-        run_label, best_result["trial"] + 1, best_score, best_result["best_params"],
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=seed),
+        pruner=pruner,
+        study_name=run_label,
     )
 
+    # Populated inside the objective so we can retrieve full records after optimize()
+    trial_records: dict[int, dict] = {}
+
+    def objective(trial: optuna.Trial) -> float:
+        sampled        = _sample_optuna_params(trial, search_space) if search_space else {}
+        trial_num      = trial.number
+        trial_run_name = f"{run_label}_t{trial_num:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        trial_dir      = output_dir / f"trial_{trial_num:02d}"
+
+        logger.info("─" * 56)
+        logger.info("[%s] Trial %d/%d  %s", run_label, trial_num + 1, n_trials, sampled)
+
+        extra_cbs = (
+            [_PruningCb(trial, "val_accuracy")] if _PruningCb is not None else []
+        )
+
+        trainer_cls = get_model(model_name)
+        trainer     = trainer_cls(epochs=sweep_epochs, **sampled)
+
+        with mlflow_module.start_run(run_name=trial_run_name) as active_run:
+            mlflow_module.log_param("optuna_trial", trial_num)
+            result = trainer.fit(
+                X_train, y_train,
+                X_val,   y_val,
+                label_names     = label_names,
+                run_name        = trial_run_name,
+                output_dir      = trial_dir,
+                mlflow_run      = active_run,
+                extra_callbacks = extra_cbs,
+            )
+            run_id = active_run.info.run_id
+
+        score = result.metrics.get("val_f1_macro", 0.0)
+        # Report final score so pruner can use it for future trials
+        trial.report(score, step=sweep_epochs)
+
+        trial_records[trial_num] = {
+            "trial":         trial_num,
+            "run_id":        run_id,
+            "run_name":      trial_run_name,
+            "model":         model_name,
+            "val_accuracy":  result.metrics.get("val_accuracy",  0.0),
+            "val_f1_macro":  score,
+            "cv_best_score": None,
+            "model_size_kb": result.model_size_kb,
+            "best_params":   {k: str(v) for k, v in sampled.items()},
+            "artifact_uri":  str(trial_dir),
+        }
+
+        logger.info(
+            "[%s] Trial %d  val_accuracy=%.4f  val_f1_macro=%.4f",
+            run_label, trial_num + 1,
+            result.metrics.get("val_accuracy", float("nan")), score,
+        )
+
+        if trial.should_prune():
+            raise optuna.exceptions.TrialPruned()
+
+        return score
+
+    logger.info(
+        "[%s] Optuna study: %d trial(s)  sampler=TPE  pruner=%s  epochs/trial=%d",
+        run_label, n_trials, pruner_name, sweep_epochs,
+    )
+    study.optimize(objective, n_trials=n_trials, catch=(Exception,))
+
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    n_pruned  = sum(1 for t in study.trials if t.state == optuna.trial.TrialState.PRUNED)
+    logger.info("[%s] Completed: %d  Pruned: %d", run_label, len(completed), n_pruned)
+
+    if not completed:
+        logger.error("[%s] All %d trials failed or were pruned.", run_label, n_trials)
+        return None
+
+    best_trial = study.best_trial
+    best_score = best_trial.value
+    logger.info(
+        "[%s] Best trial #%d  val_f1_macro=%.4f  params=%s",
+        run_label, best_trial.number + 1, best_score, best_trial.params,
+    )
+
+    all_records = [
+        trial_records[t.number] for t in study.trials if t.number in trial_records
+    ]
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "trial_summary.json").write_text(json.dumps({
-        "run_name": run_label, "model": model_name,
-        "n_trials": n_trials, "sweep_epochs": sweep_epochs,
-        "best_trial": best_result["trial"], "best_val_f1_macro": best_score,
-        "trials": trial_results,
+        "run_name":          run_label,
+        "model":             model_name,
+        "n_trials":          n_trials,
+        "n_completed":       len(completed),
+        "n_pruned":          n_pruned,
+        "sweep_epochs":      sweep_epochs,
+        "best_trial":        best_trial.number,
+        "best_val_f1_macro": best_score,
+        "best_params":       {k: str(v) for k, v in best_trial.params.items()},
+        "trials":            all_records,
     }, indent=2))
 
-    return best_result
+    return trial_records.get(best_trial.number)
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +584,13 @@ def main(argv=None) -> None:
 
     output_dir = Path(raw["output_dir"])
     experiment = raw.get("experiment", "birdeep-tuning")
+
+    experiments_dir = Path("config/experiments")
+    experiments_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = experiment.replace("/", "_").replace(" ", "_")
+    archive_path = experiments_dir / f"{safe_name}.yaml"
+    shutil.copy2(cfg_path, archive_path)
+    logger.info("Config archived → %s", archive_path)
     mlflow_uri = raw.get("mlflow_uri")
     runs: list = raw.get("runs") or []
 
@@ -496,7 +637,7 @@ def main(argv=None) -> None:
                 if "search_space" not in run_cfg:
                     logger.warning("[%s] No 'search_space:' key — skipping.", run_label)
                     continue
-                result = _sweep_deep(run_cfg, raw, mlflow_module)
+                result = _tune_deep_optuna(run_cfg, raw, mlflow_module)
 
             if result:
                 results.append(result)

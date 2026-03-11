@@ -359,12 +359,21 @@ def main(argv: Optional[list[str]] = None) -> None:
 
     # ── Config-driven mode ────────────────────────────────────────────────
     if args.config:
+        import shutil
         cfg = load_train_config(Path(args.config))
         runs = cfg.resolved_runs()
         if not runs:
             logger.error("No runs defined in %s", args.config)
             sys.exit(1)
         logger.info("Config sweep: %d run(s) in experiment '%s'", len(runs), cfg.experiment)
+
+        # Archive a copy of the config under config/experiments/<experiment>.yaml
+        experiments_dir = Path("config/experiments")
+        experiments_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = cfg.experiment.replace("/", "_").replace(" ", "_")
+        archive_path = experiments_dir / f"{safe_name}.yaml"
+        shutil.copy2(args.config, archive_path)
+        logger.info("Config archived → %s", archive_path)
         for run in runs:
             try:
                 _run_one(run, cfg.experiment, cfg.mlflow_uri,

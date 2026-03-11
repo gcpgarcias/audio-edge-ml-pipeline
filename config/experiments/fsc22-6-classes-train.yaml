@@ -12,7 +12,7 @@
 
 features_dir:      data/processed/fsc22_classical_train
 output_dir:        data/models
-experiment:        fsc22-9-classes-train
+experiment:        fsc22-6-classes-train
 class_filter:
   - Fire
   - Thunderstorm
@@ -20,9 +20,6 @@ class_filter:
   - Silence
   - Helicopter
   - Gunshot
-  - Chainsaw
-  - Handsaw
-  - WoodChop
 
 # mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
 #                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
@@ -39,23 +36,23 @@ runs:
   # ── Classical models (flat audio_classical features) ──────────────────────
 
   - model: svm
-    name:  fsc22_9_classes_svm
+    name:  fsc22_6_classes_svm
     params:
       C:      1.0
       kernel: rbf
       gamma:  scale
 
   - model: svm
-    name:  fsc22_9_classes_svm_c10
+    name:  fsc22_6_classes_svm_c10
     params:
       C:      10.0
       kernel: rbf
 
   - model: lda
-    name:  fsc22_9_classes_lda
+    name:  fsc22_6_classes_lda
 
   - model: decision_tree
-    name:  fsc22_9_classes_dtree
+    name:  fsc22_6_classes_dtree
     params:
       max_depth:        10
       min_samples_leaf: 2
@@ -67,17 +64,17 @@ runs:
   #     max_depth:    20
 
   - model: knn
-    name:  fsc22_9_classes_knn
+    name:  fsc22_6_classes_knn
     params:
       n_neighbors: 7
       metric:      minkowski
 
-  # - model: kmeans
-  #   name:  fsc22_9_classes_kmeans
-  #   # n_clusters defaults to number of classes in the FeatureSet
+  - model: kmeans
+    name:  fsc22_6_classes_kmeans
+    # n_clusters defaults to number of classes in the FeatureSet
 
   - model: pca_svm
-    name:  fsc22_9_classes_pca_svm
+    name:  fsc22_6_classes_pca_svm
     params:
       n_components: 50
       C:            1.0
@@ -90,7 +87,7 @@ runs:
   #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
 
   - model: mlp
-    name:  fsc22_9_classes_mlp
+    name:  fsc22_6_classes_mlp
     features_dir: data/processed/fsc22_classical_train
     params:
       hidden_units: [256, 128]
@@ -99,7 +96,7 @@ runs:
       batch_size:   32
 
   - model: cnn
-    name:  fsc22_9_classes_cnn
+    name:  fsc22_6_classes_cnn
     features_dir: data/processed/fsc22_melspec_train
     params:
       filters:    32
@@ -109,7 +106,7 @@ runs:
       batch_size: 32
 
   - model: rnn
-    name:  fsc22_9_classes_rnn
+    name:  fsc22_6_classes_rnn
     features_dir: data/processed/fsc22_mfcc_seq_train
     params:
       units:      128
@@ -119,7 +116,7 @@ runs:
       batch_size: 32
 
   - model: transformer
-    name:  fsc22_9_classes_transformer
+    name:  fsc22_6_classes_transformer
     features_dir: data/processed/fsc22_mfcc_seq_train
     params:
       num_heads:  4

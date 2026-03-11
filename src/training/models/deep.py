@@ -98,14 +98,15 @@ class KerasTrainer(BaseTrainer):
 
     def fit(
         self,
-        X_train:     np.ndarray,
-        y_train:     np.ndarray,
-        X_val:       np.ndarray,
-        y_val:       np.ndarray,
-        label_names: list[str],
-        run_name:    str,
-        output_dir:  Path,
+        X_train:         np.ndarray,
+        y_train:         np.ndarray,
+        X_val:           np.ndarray,
+        y_val:           np.ndarray,
+        label_names:     list[str],
+        run_name:        str,
+        output_dir:      Path,
         mlflow_run,
+        extra_callbacks: list = None,
     ) -> TrainResult:
         import tensorflow as tf
 
@@ -183,6 +184,7 @@ class KerasTrainer(BaseTrainer):
             tf.keras.callbacks.ReduceLROnPlateau(
                 monitor="val_loss", factor=0.5, patience=5, min_lr=1e-6
             ),
+            *(extra_callbacks or []),
         ]
 
         logger.info("Training %s on %d samples ...", self.name, len(X_train))
