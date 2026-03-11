@@ -236,19 +236,79 @@ class FeaturePipeline:
 
 
 # ---------------------------------------------------------------------------
+# Label remapping (cross-domain validation support)
+# ---------------------------------------------------------------------------
+
+def _apply_label_map(fs, label_map: dict[str, str]):
+    """Return a new FeatureSet with labels remapped according to *label_map*.
+
+    Unknown labels (not in the map) are kept unchanged.  Multiple source
+    labels that map to the same target are collapsed into a single class.
+
+    Parameters
+    ----------
+    fs:
+        Original :class:`FeatureSet`.
+    label_map:
+        Mapping ``{old_label: new_label}``.  Partial maps are fine — any
+        label not present in the dict is left as-is.
+    """
+    import numpy as np
+    from src.preprocessing.feature_extraction.base import FeatureSet
+
+    if fs.labels is None or fs.label_names is None:
+        return fs
+
+    # Map each sample's string label through the dict
+    old_names = fs.label_names
+    new_name_per_sample = [
+        label_map.get(old_names[i], old_names[i]) for i in fs.labels
+    ]
+
+    # Build ordered unique label list (order of first occurrence)
+    seen: dict[str, int] = {}
+    unique_new: list[str] = []
+    for name in new_name_per_sample:
+        if name not in seen:
+            seen[name] = len(unique_new)
+            unique_new.append(name)
+
+    new_labels = np.array([seen[n] for n in new_name_per_sample], dtype=np.int32)
+
+    n_before = len(old_names)
+    n_after  = len(unique_new)
+    if n_before != n_after:
+        logger.info(
+            "label_map collapsed %d classes → %d classes: %s",
+            n_before, n_after, unique_new,
+        )
+
+    return FeatureSet(
+        features=fs.features,
+        feature_type=fs.feature_type,
+        modality=fs.modality,
+        metadata=fs.metadata,
+        labels=new_labels,
+        label_names=unique_new,
+        cluster_assignments=fs.cluster_assignments,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Loader factory (shared by flag-based and config-based paths)
 # ---------------------------------------------------------------------------
 
 def _build_loader(
-    loader_name:  str,
-    dataset:      str,
-    split:        str,
-    label_col:    Optional[str] = None,
-    text_col:     str           = "text",
-    audio_folder: Optional[str] = None,
-    image_folder: Optional[str] = None,
-    text_folder:  Optional[str] = None,
-    video_folder: Optional[str] = None,
+    loader_name:    str,
+    dataset:        str,
+    split:          str,
+    label_col:      Optional[str]       = None,
+    text_col:       str                 = "text",
+    audio_folder:   Optional[str]       = None,
+    image_folder:   Optional[str]       = None,
+    text_folder:    Optional[str]       = None,
+    video_folder:   Optional[str]       = None,
+    class_filter: Optional[list[str]] = None,
 ) -> BaseDatasetLoader:
     """Instantiate the requested loader with the given parameters.
 
@@ -273,6 +333,7 @@ def _build_loader(
         AudioFolderLoader,
         BIRDeepImageLoader,
         BIRDeepLoader,
+        FSC22Loader,
         ImageFolderLoader,
         TabularLoader,
         TextCSVLoader,
@@ -281,10 +342,13 @@ def _build_loader(
         VideoFolderLoader,
     )
 
+    cf = set(class_filter) if class_filter else None
     if loader_name == "birdeep":
-        return BIRDeepLoader(dataset, split=split)
+        return BIRDeepLoader(dataset, split=split, species_filter=cf)
     elif loader_name == "birdeep_image":
-        return BIRDeepImageLoader(dataset, split=split)
+        return BIRDeepImageLoader(dataset, split=split, species_filter=cf)
+    elif loader_name == "fsc22":
+        return FSC22Loader(dataset, split=split, class_filter=cf)
     elif loader_name == "audio_folder":
         root = audio_folder or dataset
         return AudioFolderLoader(root, split=split)
@@ -306,7 +370,7 @@ def _build_loader(
     else:
         raise ValueError(
             f"Unknown loader: {loader_name!r}. "
-            "Valid choices: birdeep, birdeep_image, audio_folder, image_folder, "
+            "Valid choices: birdeep, birdeep_image, fsc22, audio_folder, image_folder, "
             "text_folder, text_json, text_csv, tabular, video_folder."
         )
 
@@ -317,6 +381,7 @@ def _build_loader(
 
 _LOADER_CHOICES = [
     "birdeep", "birdeep_image",
+    "fsc22",
     "audio_folder", "image_folder", "video_folder",
     "text_folder", "text_json", "text_csv",
     "tabular",
@@ -418,11 +483,22 @@ def _build_arg_parser():
         default=None,
         help="Limit the number of samples (for quick testing).",
     )
+    p.add_argument(
+        "--classes",
+        nargs="+",
+        default=None,
+        metavar="SPECIES",
+        help=(
+            "Restrict to a subset of species (birdeep / birdeep_image loaders only). "
+            "Space-separated list, e.g. --classes 'Cisticola juncidis' 'Emberiza calandra'."
+        ),
+    )
     return p
 
 
-def _run_experiment(exp) -> None:
+def _run_experiment(exp, config_path: Optional[Path] = None) -> None:
     """Execute a single :class:`ExperimentConfig` end-to-end."""
+    import shutil
     from src.preprocessing.feature_extraction import get  # triggers registration
 
     loader = _build_loader(
@@ -435,12 +511,17 @@ def _run_experiment(exp) -> None:
         image_folder=exp.image_folder,
         text_folder=exp.text_folder,
         video_folder=exp.video_folder,
+        class_filter=exp.class_filter,
     )
     extractor  = get(exp.extractor)(**exp.extractor_params)
     output_dir = Path(exp.resolved_output())
     pipeline   = FeaturePipeline(loader, extractor)
     fs         = pipeline.run(max_samples=exp.max_samples)
+    if exp.label_map:
+        fs = _apply_label_map(fs, exp.label_map)
     FeaturePipeline.save(fs, output_dir)
+    if config_path is not None:
+        shutil.copy2(config_path, output_dir / "config.yaml")
     print(f"[{exp.resolved_name()}] {fs}")
     print(f"  -> {output_dir}")
 
@@ -458,7 +539,7 @@ def main() -> None:
 
         for exp in experiments:
             print(f"\nRunning: {exp.resolved_name()} ...")
-            _run_experiment(exp)
+            _run_experiment(exp, config_path=Path(args.config))
 
         print("\nAll experiments complete.")
 
@@ -479,6 +560,7 @@ def main() -> None:
             image_folder=args.image_folder,
             text_folder=args.text_folder,
             video_folder=args.video_folder,
+            class_filter=args.classes,
         )
         _run_experiment(exp)
 

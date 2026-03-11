@@ -84,6 +84,7 @@ class ModelRunConfig:
     output_dir:        Optional[str]  = None
     val_split:         float          = 0.2
     params:            dict           = field(default_factory=dict)
+    class_filter:      Optional[list[str]] = None
 
 
 @dataclass
@@ -115,6 +116,7 @@ class TrainConfig:
     mlflow_uri:               Optional[str]        = None
     val_split:                float                = 0.2
     features_test_dir:        Optional[str]        = None
+    class_filter:             Optional[list[str]]  = None
     runs:                     list[ModelRunConfig] = field(default_factory=list)
     # Auto-selection written to <output_dir>/shortlist.json at end of sweep
     auto_select:              bool                 = True
@@ -138,6 +140,8 @@ class TrainConfig:
                     val_split         = run.val_split         if run.val_split != 0.2
                                         else self.val_split,
                     params            = run.params,
+                    class_filter      = run.class_filter if run.class_filter is not None
+                                        else self.class_filter,
                 )
             )
         return resolved
@@ -177,6 +181,8 @@ def load_train_config(path: Path) -> TrainConfig:
     mlflow_uri               = raw.get("mlflow_uri", None)
     val_split                = float(raw.get("val_split", 0.2))
     features_test_dir        = raw.get("features_test_dir", None)
+    # Accept both class_filter and species_filter (legacy alias)
+    class_filter             = raw.get("class_filter") or raw.get("species_filter") or None
     auto_select              = bool(raw.get("auto_select", True))
     auto_select_top_n        = int(raw.get("auto_select_top_n", 5))
     auto_select_metric       = str(raw.get("auto_select_metric", "val_f1_macro"))
@@ -204,6 +210,7 @@ def load_train_config(path: Path) -> TrainConfig:
                 output_dir        = item.get("output_dir"),
                 val_split         = float(item.get("val_split", 0.2)),
                 params            = item.get("params") or {},
+                class_filter      = item.get("class_filter") or item.get("species_filter") or None,
             )
         )
 
@@ -214,6 +221,7 @@ def load_train_config(path: Path) -> TrainConfig:
         mlflow_uri               = mlflow_uri,
         val_split                = val_split,
         features_test_dir        = features_test_dir,
+        class_filter             = class_filter,
         runs                     = runs,
         auto_select              = auto_select,
         auto_select_top_n        = auto_select_top_n,

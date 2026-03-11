@@ -8,6 +8,7 @@ compatible with any :class:`~src.preprocessing.feature_extraction.base.BaseFeatu
 
 from .audio_folder_loader import AudioFolderLoader
 from .birdeep_loader import BIRDeepImageLoader, BIRDeepLoader
+from .fsc22_loader import FSC22Loader
 from .image_folder_loader import ImageFolderLoader
 from .tabular_loader import TabularLoader
 from .text_loader import TextCSVLoader, TextFolderLoader, TextJSONLoader
@@ -17,6 +18,7 @@ __all__ = [
     # Audio
     "AudioFolderLoader",
     "BIRDeepLoader",
+    "FSC22Loader",
     # Image
     "BIRDeepImageLoader",
     "ImageFolderLoader",

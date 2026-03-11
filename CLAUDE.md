@@ -18,7 +18,7 @@ devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
 | 1 | Data ingestion | Python / FastAPI (`src/ingestion/api.py`) | Done |
 | 2 | Data transformation | Python (`src/preprocessing/`) | **Done** |
 | 3 | Model training | sklearn + Keras (`src/training/`) | **Done** |
-| 4 | Model evaluation | MLflow local file store (`mlflow/`) | **Done** |
+| 4 | Model evaluation | MLflow local file store (`mlruns/`) | **Done** |
 | 5a | Model selection (pre-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |
 | 6a | Model fine-tuning | sklearn GridSearchCV (`src/training/tune.py`) | **Done** |
 | 5b | Model selection (post-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |

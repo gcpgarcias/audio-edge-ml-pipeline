@@ -1,0 +1,22 @@
+# config/experiments/birdeep_remapped_train.yaml
+dataset: data/raw/BIRDeep_AudioAnnotations
+split:   train
+
+experiments:
+  - name:      birdeep_as_fsc22_train
+    loader:    birdeep
+    extractor: audio_classical
+    species_filter:
+      - Cisticola juncidis
+      - Emberiza calandra
+      - Galerida theklae
+      - Saxicola rubicola
+      - Luscinia megarhynchos
+      - No audio
+    label_map:
+      Cisticola juncidis: BirdChirping
+      Emberiza calandra:  BirdChirping
+      Galerida theklae:   BirdChirping
+      Saxicola rubicola:  BirdChirping
+      Luscinia megarhynchos: BirdChirping
+      No audio: Silence

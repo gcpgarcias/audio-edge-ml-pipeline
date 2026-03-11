@@ -9,7 +9,7 @@
 # Required per-experiment keys: extractor, loader
 # (may be supplied at the top level and inherited).
 
-dataset: data/raw/fsc22
+dataset: data/raw/BIRDeep_AudioAnnotations
 split:   train
 
 # ── Experiments ────────────────────────────────────────────────────────────
@@ -18,43 +18,55 @@ experiments:
 
   # ── Audio ────────────────────────────────────────────────────────────────
 
-  - name:      fsc22_classical_train
-    extractor: audio_classical
-    loader:    fsc22
-    # output defaults to data/processed/fsc22_classical_train
+  - name:      birdeep_classical_train
+   extractor: audio_classical
+   loader:    birdeep
+   # output defaults to data/processed/birdeep_classical_train
 
-  # - name:      fsc22_classical_val
-  #   extractor: audio_classical
-  #   loader:    fsc22
-  #   split:     validation
+  - name:      birdeep_classical_val
+   extractor: audio_classical
+   loader:    birdeep
+   split:     validation
 
-  # - name:      fsc22_melspec_train
-  #   extractor: audio_mel_spec
-  #   loader:    fsc22
-  #   extractor_params:
-  #     duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
-
-  - name:      fsc22_mfcc_seq_train
-    extractor: audio_mfcc_seq
-    loader:    fsc22
+  - name:      birdeep_melspec_train
+    extractor: audio_mel_spec
+    loader:    birdeep
     extractor_params:
-      duration: 5.0
+      duration: 3.0   # pad/trim to fixed length so all spectrograms share the same T
+
+  - name:      birdeep_mfcc_seq_train
+    extractor: audio_mfcc_seq
+    loader:    birdeep
+    extractor_params:
+      duration: 3.0
+
+  - name:      birdeep_cqt_train
+    extractor: audio_cqt
+    loader:    birdeep
+    extractor_params:
+      duration: 3.0
+
+  - name:      birdeep_waveform_train
+    extractor: audio_waveform
+    loader:    birdeep
+    extractor_params:
+      duration: 3.0
     
 
   # ── Image ─────────────────────────────────────────────────────────────────
 
-  # - name:      fsc22_image_classical_train
-  #   extractor: image_classical
-  #   loader:    fsc22_image
+  - name:      birdeep_image_classical_train
+    extractor: image_classical
+    loader:    birdeep_image
 
-  # - name:      fsc22_mobilenet_train
-  #   extractor: image_mobilenet_v2
-  #   loader:    fsc22_image
+  - name:      birdeep_mobilenet_train
+    extractor: image_mobilenet_v2
+    loader:    birdeep_image
 
-  # - name:      fsc22_mobilenet_val
-  #   extractor: image_mobilenet_v2
-  #   loader:    fsc22_image
-  #   split:     validation
+  - name:      birdeep_mobilenet_val
+    extractor: image_mobilenet_v2
+    loader:    birdeep_image
+    split:     validation
 
   # ── Audio (generic folder layout — adapt path to your data) ─────────────
   # Uncomment and set audio_folder to the root of any class-per-subfolder

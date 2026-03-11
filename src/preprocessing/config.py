@@ -101,6 +101,9 @@ class ExperimentConfig:
         Override dataset root for the ``text_folder`` loader.
     video_folder:
         Override dataset root for the ``video_folder`` loader.
+    class_filter:
+        If given, only samples whose label is in this list are included.
+        Supported by ``birdeep``, ``birdeep_image``, and ``fsc22`` loaders.
     """
 
     extractor:    str
@@ -117,6 +120,8 @@ class ExperimentConfig:
     text_folder:     Optional[str] = None
     video_folder:    Optional[str] = None
     extractor_params: dict         = field(default_factory=dict)
+    class_filter:    Optional[list[str]]       = None
+    label_map:       Optional[dict[str, str]]  = None
 
     def resolved_name(self) -> str:
         """Return *name* or auto-generate one from loader/extractor/split."""
@@ -164,6 +169,9 @@ class PipelineConfig:
         Default text folder override.
     video_folder:
         Default video folder override.
+    class_filter:
+        Default class filter applied to all experiments (supported by
+        ``birdeep``, ``birdeep_image``, and ``fsc22`` loaders).
     experiments:
         List of per-run configurations.  Empty → single-run mode.
     """
@@ -181,6 +189,8 @@ class PipelineConfig:
     text_folder:     Optional[str] = None
     video_folder:    Optional[str] = None
     extractor_params: dict         = field(default_factory=dict)
+    class_filter:    Optional[list[str]]       = None
+    label_map:       Optional[dict[str, str]]  = None
     experiments:     list[ExperimentConfig] = field(default_factory=list)
 
     def resolved_experiments(self) -> list[ExperimentConfig]:
@@ -217,6 +227,8 @@ class PipelineConfig:
                     text_folder=self.text_folder,
                     video_folder=self.video_folder,
                     extractor_params=self.extractor_params,
+                    class_filter=self.class_filter,
+                    label_map=self.label_map,
                 )
             ]
 
@@ -238,6 +250,8 @@ class PipelineConfig:
                 text_folder=exp.text_folder or self.text_folder,
                 video_folder=exp.video_folder or self.video_folder,
                 extractor_params=exp.extractor_params if exp.extractor_params else self.extractor_params,
+                class_filter=exp.class_filter if exp.class_filter is not None else self.class_filter,
+                label_map=exp.label_map if exp.label_map is not None else self.label_map,
             )
             if not merged.extractor:
                 raise ValueError(
@@ -287,6 +301,12 @@ def load_config(path: Path | str) -> PipelineConfig:
     # Extract experiments list separately
     raw_experiments: list[dict] = raw.pop("experiments", []) or []
 
+    # Accept species_filter as a legacy alias for class_filter
+    if "species_filter" in raw and "class_filter" not in raw:
+        raw["class_filter"] = raw.pop("species_filter")
+    else:
+        raw.pop("species_filter", None)
+
     # Build top-level config (ignoring unknown keys to be forward-compatible)
     _top_keys = {f for f in PipelineConfig.__dataclass_fields__}
     top_kwargs = {k: v for k, v in raw.items() if k in _top_keys}
@@ -295,6 +315,11 @@ def load_config(path: Path | str) -> PipelineConfig:
     # Parse each experiment
     _exp_keys = {f for f in ExperimentConfig.__dataclass_fields__}
     for raw_exp in raw_experiments:
+        # Accept species_filter as a legacy alias for class_filter
+        if "species_filter" in raw_exp and "class_filter" not in raw_exp:
+            raw_exp["class_filter"] = raw_exp.pop("species_filter")
+        else:
+            raw_exp.pop("species_filter", None)
         exp_kwargs = {k: v for k, v in raw_exp.items() if k in _exp_keys}
         # extractor and loader may be absent (inherited from top level)
         exp = ExperimentConfig(

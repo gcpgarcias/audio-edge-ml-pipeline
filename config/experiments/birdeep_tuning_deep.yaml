@@ -12,7 +12,7 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  birdeep-5-tuning
+experiment:  birdeep-tuning-deep
 mlflow_uri:  mlruns/
 val_split:   0.2
 
@@ -21,8 +21,8 @@ cv:      5
 scoring: f1_macro
 
 # Deep-specific defaults
-n_trials:     50    # random draws per deep run
-sweep_epochs: 50    # epochs per trial
+n_trials:     10    # random draws per deep run
+sweep_epochs: 25    # epochs per trial
 seed:         42
 
 # Optional: restrict classical runs to shortlisted models only.
@@ -44,10 +44,10 @@ runs:
 
   # ── Classical ML ──────────────────────────────────────────────────────────
 
-  - model:        lda
-    features_dir: data/processed/birdeep_classical_train
-    grid:
-      solver: [svd, lsqr]
+  # - model:        lda
+  #   features_dir: data/processed/birdeep_classical_train
+  #   grid:
+  #     solver: [svd, lsqr]
 
   # - model:        svm
   #   features_dir: data/processed/birdeep_classical_train
@@ -55,12 +55,12 @@ runs:
   #     C:      [0.1, 1.0, 10.0, 100.0]
   #     kernel: [rbf, linear]
 
-  - model:        decision_tree
-    features_dir: data/processed/birdeep_classical_train
-    grid:
-      max_depth:        [5, 10, 20, null]
-      min_samples_leaf: [1, 2, 5]
-      criterion:        [gini, entropy]
+  # - model:        decision_tree
+  #   features_dir: data/processed/birdeep_classical_train
+  #   grid:
+  #     max_depth:        [5, 10, 20, null]
+  #     min_samples_leaf: [1, 2, 5]
+  #     criterion:        [gini, entropy]
 
   # - model:        random_forest
   #   features_dir: data/processed/birdeep_classical_train
@@ -69,20 +69,20 @@ runs:
   #     max_depth:    [10, 20, null]
   #     max_features: [sqrt, log2]
 
-  - model:        knn
-    features_dir: data/processed/birdeep_classical_train
-    grid:
-      n_neighbors: [3, 5, 7, 11, 15]
-      weights:     [uniform, distance]
-      metric:      [minkowski, cosine]
+  # - model:        knn
+  #   features_dir: data/processed/birdeep_classical_train
+  #   grid:
+  #     n_neighbors: [3, 5, 7, 11, 15]
+  #     weights:     [uniform, distance]
+  #     metric:      [minkowski, cosine]
 
-  - model:        pca_svm
-    features_dir: data/processed/birdeep_classical_train
-    grid:
-      n_components: [30, 50, 80]
-      C:            [0.1, 1.0, 10.0]
-      kernel:       [rbf, linear]
-      gamma:        [scale, auto]
+  # - model:        pca_svm
+  #   features_dir: data/processed/birdeep_classical_train
+  #   grid:
+  #     n_components: [30, 50, 80]
+  #     C:            [0.1, 1.0, 10.0]
+  #     kernel:       [rbf, linear]
+  #     gamma:        [scale, auto]
 
   # ── Deep models ───────────────────────────────────────────────────────────
 
@@ -105,44 +105,44 @@ runs:
       batch_size:    [16, 32]
       learning_rate: [0.001, 0.0005]
 
-  # - model:        cnn
-  #   name:         birdeep_cnn_mfcc_sweep
-  #   features_dir: data/processed/birdeep_mfcc_seq_train
-  #   search_space:
-  #     filters:       [16, 32, 64]
-  #     n_blocks:      [2, 3, 4]
-  #     dropout:       [0.2, 0.3, 0.4]
-  #     batch_size:    [16, 32]
-  #     learning_rate: [0.001, 0.0005]
+  - model:        cnn
+    name:         birdeep_cnn_mfcc_sweep
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    search_space:
+      filters:       [16, 32, 64]
+      n_blocks:      [2, 3, 4]
+      dropout:       [0.2, 0.3, 0.4]
+      batch_size:    [16, 32]
+      learning_rate: [0.001, 0.0005]
 
-  # - model:        rnn
-  #   name:         birdeep_rnn_mfcc_sweep
-  #   features_dir: data/processed/birdeep_mfcc_seq_train
-  #   search_space:
-  #     units:         [64, 128, 256]
-  #     n_layers:      [1, 2]
-  #     dropout:       [0.2, 0.3, 0.4]
-  #     batch_size:    [16, 32]
-  #     learning_rate: [0.001, 0.0005]
+  - model:        rnn
+    name:         birdeep_rnn_mfcc_sweep
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    search_space:
+      units:         [64, 128, 256]
+      n_layers:      [1, 2]
+      dropout:       [0.2, 0.3, 0.4]
+      batch_size:    [16, 32]
+      learning_rate: [0.001, 0.0005]
 
-  # - model:        transformer
-  #   name:         birdeep_transformer_melspec_sweep
-  #   features_dir: data/processed/birdeep_melspec_train
-  #   search_space:
-  #     num_heads:     [2, 4]
-  #     ff_dim:        [64, 128, 256]
-  #     n_blocks:      [1, 2, 3]
-  #     dropout:       [0.1, 0.2, 0.3]
-  #     batch_size:    [16, 32]
-  #     learning_rate: [0.001, 0.0005]
+  - model:        transformer
+    name:         birdeep_transformer_melspec_sweep
+    features_dir: data/processed/birdeep_melspec_train
+    search_space:
+      num_heads:     [2, 4]
+      ff_dim:        [64, 128, 256]
+      n_blocks:      [1, 2, 3]
+      dropout:       [0.1, 0.2, 0.3]
+      batch_size:    [16, 32]
+      learning_rate: [0.001, 0.0005]
 
-  # - model:        transformer
-  #   name:         birdeep_transformer_mfcc_sweep
-  #   features_dir: data/processed/birdeep_mfcc_seq_train
-  #   search_space:
-  #     num_heads:     [2, 4]
-  #     ff_dim:        [64, 128, 256]
-  #     n_blocks:      [1, 2, 3]
-  #     dropout:       [0.1, 0.2, 0.3]
-  #     batch_size:    [16, 32]
-  #     learning_rate: [0.001, 0.0005]
+  - model:        transformer
+    name:         birdeep_transformer_mfcc_sweep
+    features_dir: data/processed/birdeep_mfcc_seq_train
+    search_space:
+      num_heads:     [2, 4]
+      ff_dim:        [64, 128, 256]
+      n_blocks:      [1, 2, 3]
+      dropout:       [0.1, 0.2, 0.3]
+      batch_size:    [16, 32]
+      learning_rate: [0.001, 0.0005]

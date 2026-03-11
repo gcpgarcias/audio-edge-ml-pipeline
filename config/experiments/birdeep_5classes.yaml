@@ -10,21 +10,23 @@
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
-features_dir:      data/processed/fsc22_classical_train
+features_dir:      data/processed/birdeep_classical_train
 output_dir:        data/models
-experiment:        fsc22-3-classes-smoketest-2
+experiment:        birdeep-5-classes
 class_filter:
-  - Fire
-  - Thunderstorm
-  - WaterDrops
+  - "Cisticola juncidis"
+  - "Emberiza calandra"
+  - "Galerida theklae"
+  - "Saxicola rubicola"
+  - "Luscinia megarhynchos"
 
-# mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
+# mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlflow/"
 #                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
 
 val_split:         0.2
 
 # Optional held-out test FeatureSet (same feature type as features_dir)
-# features_test_dir: data/processed/fsc22_classical_test
+# features_test_dir: data/processed/birdeep_classical_test
 
 # ── Runs ────────────────────────────────────────────────────────────────────
 
@@ -33,78 +35,78 @@ runs:
   # ── Classical models (flat audio_classical features) ──────────────────────
 
   # - model: svm
-  #   name:  fsc22_svm
+  #   name:  birdeep_svm
   #   params:
   #     C:      1.0
   #     kernel: rbf
   #     gamma:  scale
 
   # - model: svm
-  #   name:  fsc22_svm_c10
+  #   name:  birdeep_svm_c10
   #   params:
   #     C:      10.0
   #     kernel: rbf
 
   - model: lda
-    name:  fsc22_3_classes_lda_smoketest_2
+    name:  birdeep_5classes_lda
 
-  # - model: decision_tree
-  #   name:  fsc22_5classes_dtree
-  #   params:
-  #     max_depth:        10
-  #     min_samples_leaf: 2
+  - model: decision_tree
+    name:  birdeep_5classes_dtree
+    params:
+      max_depth:        10
+      min_samples_leaf: 2
 
   # - model: random_forest
-  #   name:  fsc22_5classes_rf
+  #   name:  birdeep_5classes_rf
   #   params:
   #     n_estimators: 200
   #     max_depth:    20
 
-  # - model: knn
-  #   name:  fsc22_5classes_knn
-  #   params:
-  #     n_neighbors: 7
-  #     metric:      minkowski
+  - model: knn
+    name:  birdeep_5classes_knn
+    params:
+      n_neighbors: 7
+      metric:      minkowski
 
-  - model: kmeans
-    name:  fsc22_kmeans
-    # n_clusters defaults to number of classes in the FeatureSet
+  # - model: kmeans
+  #   name:  birdeep_kmeans
+  #   # n_clusters defaults to number of classes in the FeatureSet
 
-  # - model: pca_svm
-  #   name:  fsc22_3_classes_pca_svm_smoketest
-  #   params:
-  #     n_components: 50
-  #     C:            1.0
-  #     kernel:       rbf
+  - model: pca_svm
+    name:  birdeep_5classes_pca_svm
+    params:
+      n_components: 50
+      C:            1.0
+      kernel:       rbf
 
 # ── Deep models on mel spectrogram features ───────────────────────────────
   # Un-comment and point features_dir at a deep FeatureSet, e.g.
-  #   data/processed/fsc22_melspec_train  (shape: N × H × W)
+  #   data/processed/birdeep_melspec_train  (shape: N × H × W)
   # or
-  #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
+  #   data/processed/birdeep_mfcc_seq_train  (shape: N × T × D)
 
   - model: mlp
-    name:  fsc22_3_classes_mlp_smoketest_2
-    features_dir: data/processed/fsc22_classical_train
+    name:  birdeep_5classes_mlp
+    features_dir: data/processed/birdeep_classical_train
     params:
       hidden_units: [256, 128]
       dropout:      0.4
       epochs:       50
       batch_size:   32
 
-  # - model: cnn
-  #   name:  fsc22_5classes_cnn
-  #   features_dir: data/processed/fsc22_melspec_train
-  #   params:
-  #     filters:    32
-  #     n_blocks:   3
-  #     dropout:    0.3
-  #     epochs:     50
-  #     batch_size: 32
+  - model: cnn
+    name:  birdeep_5classes_cnn
+    features_dir: data/processed/birdeep_melspec_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
 
   # - model: rnn
-  #   name:  fsc22_rnn
-  #   features_dir: data/processed/fsc22_mfcc_seq_train
+  #   name:  birdeep_rnn
+  #   features_dir: data/processed/birdeep_mfcc_seq_train
   #   params:
   #     units:      128
   #     n_layers:   2
@@ -113,8 +115,8 @@ runs:
   #     batch_size: 32
 
   # - model: transformer
-  #   name:  fsc22_transformer
-  #   features_dir: data/processed/fsc22_mfcc_seq_train
+  #   name:  birdeep_transformer
+  #   features_dir: data/processed/birdeep_mfcc_seq_train
   #   params:
   #     num_heads:  4
   #     ff_dim:     128

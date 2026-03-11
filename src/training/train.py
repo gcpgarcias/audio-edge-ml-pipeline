@@ -83,10 +83,11 @@ def _setup_mlflow(uri: Optional[str], experiment: str):
 # ---------------------------------------------------------------------------
 
 def _run_one(
-    run:        ModelRunConfig,
-    experiment: str,
-    mlflow_uri: Optional[str],
-    max_samples: Optional[int] = None,
+    run:         ModelRunConfig,
+    experiment:  str,
+    mlflow_uri:  Optional[str],
+    max_samples: Optional[int]  = None,
+    config_path: Optional[Path] = None,
 ) -> None:
     """Execute a single training run described by *run*."""
 
@@ -112,6 +113,26 @@ def _run_one(
         idx = rng.choice(len(X), max_samples, replace=False)
         X, y = X[idx], y[idx]
         logger.info("[%s] Subsampled to %d samples", run.name, max_samples)
+
+    # ── 1b. Class filter ──────────────────────────────────────────────────
+    if run.class_filter:
+        filter_set = set(run.class_filter)
+        allowed_indices = [i for i, n in enumerate(label_names) if n in filter_set]
+        if not allowed_indices:
+            raise ValueError(
+                f"[{run.name}] class_filter {run.class_filter!r} matched none of "
+                f"the available classes: {label_names!r}"
+            )
+        mask = np.isin(y, allowed_indices)
+        X, y = X[mask], y[mask]
+        # Remap sparse label indices to contiguous 0..N-1
+        idx_map = {old: new for new, old in enumerate(allowed_indices)}
+        y = np.array([idx_map[lbl] for lbl in y], dtype=y.dtype)
+        label_names = [label_names[i] for i in allowed_indices]
+        logger.info(
+            "[%s] class_filter: keeping %d classes (%s), %d samples",
+            run.name, len(label_names), label_names, len(X),
+        )
 
     # ── 2. Train / val split ──────────────────────────────────────────────
     from sklearn.model_selection import train_test_split
@@ -140,6 +161,9 @@ def _run_one(
     run_name = f"{run.name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
     with mlflow_module.start_run(run_name=run_name) as active_run:
+
+        if config_path is not None:
+            mlflow_module.log_artifact(str(config_path), artifact_path="config")
 
         # ── 5. Train ──────────────────────────────────────────────────────
         trainer_cls = get_model(run.model)
@@ -228,7 +252,7 @@ def _auto_select(
         if candidates:
             # Stable, experiment-scoped copy — use this path for downstream stages
             safe_name = experiment.replace("/", "_").replace(" ", "_")
-            scoped_path = output_dir / f"shortlist_{safe_name}.json"
+            scoped_path = output_dir / f"shortlists/shortlist_{safe_name}.json"
             write_shortlist(candidates, scoped_path, experiment, metric)
             # Generic alias — overwritten by any later sweep; use scoped name for stability
             shortlist_path = output_dir / "shortlist.json"
@@ -343,7 +367,8 @@ def main(argv: Optional[list[str]] = None) -> None:
         logger.info("Config sweep: %d run(s) in experiment '%s'", len(runs), cfg.experiment)
         for run in runs:
             try:
-                _run_one(run, cfg.experiment, cfg.mlflow_uri)
+                _run_one(run, cfg.experiment, cfg.mlflow_uri,
+                         config_path=Path(args.config))
             except Exception as exc:
                 logger.error("Run '%s' failed: %s", run.name, exc, exc_info=True)
 

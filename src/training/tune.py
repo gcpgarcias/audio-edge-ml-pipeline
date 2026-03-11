@@ -538,7 +538,7 @@ def main(argv=None) -> None:
     shortlist_out.write_text(json.dumps(shortlist_doc, indent=2))
 
     safe_name   = experiment.replace("/", "_").replace(" ", "_")
-    scoped_path = output_dir / f"shortlist_{safe_name}.json"
+    scoped_path = output_dir / f"shortlists/shortlist_{safe_name}.json"
     scoped_path.write_text(json.dumps(shortlist_doc, indent=2))
 
     logger.info("Shortlist (%d candidates) → %s", len(results), shortlist_out)
