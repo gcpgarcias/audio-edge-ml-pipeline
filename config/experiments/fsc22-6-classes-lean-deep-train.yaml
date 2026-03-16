@@ -12,7 +12,7 @@
 
 features_dir:      data/processed/fsc22_classical_lean_train
 output_dir:        data/models
-experiment:        fsc22-6-classes-lean-dtree-train
+experiment:        fsc22-6-classes-lean-deep-train
 class_filter:
   - Fire
   - Thunderstorm
@@ -60,11 +60,11 @@ runs:
   #     n_components_lda: null
   #     solver: svd
 
-  - model: decision_tree
-    name:  fsc22_6_classes_lean_dtree_train
-    params:
-      max_depth:        10
-      min_samples_leaf: 2
+  # - model: decision_tree
+  #   name:  fsc22_6_classes_dtree_train_2
+  #   params:
+  #     max_depth:        10
+  #     min_samples_leaf: 2
 
   # - model: random_forest
   #   name:  fsc22_6classes_rf
@@ -95,16 +95,16 @@ runs:
   # or
   #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
 
-  # - model: mlp
-  #   name:  fsc22_6_classes_lean_mlp_train
-  #   features_dir: data/processed/fsc22_classical_lean_train
-  #   features_test: data/processed/fsc22_classical_lean_val
-  #   params:
-  #     hidden_units: [256, 128]
-  #     dropout:      0.1
-  #     epochs:       100
-  #     batch_size:   16
-  #     learning_rate: 0.003
+  - model: mlp
+    name:  fsc22_6_classes_lean_mlp_train
+    features_dir: data/processed/fsc22_classical_lean_train
+    features_test: data/processed/fsc22_classical_lean_val
+    params:
+      hidden_units: [256, 128]
+      dropout:      0.1
+      epochs:       100
+      batch_size:   16
+      learning_rate: 0.003
 
   # - model: cnn
   #   name:  fsc22_6_classes_cnn_melspec_train_2

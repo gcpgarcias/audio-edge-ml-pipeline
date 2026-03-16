@@ -164,6 +164,10 @@ def _run_one(
 
         if config_path is not None:
             mlflow_module.log_artifact(str(config_path), artifact_path="config")
+        mlflow_module.log_param("features_dir", str(run.features_dir))
+        if run.class_filter:
+            import json as _json
+            mlflow_module.log_param("class_filter", _json.dumps(sorted(run.class_filter)))
 
         # ── 5. Train ──────────────────────────────────────────────────────
         trainer_cls = get_model(run.model)

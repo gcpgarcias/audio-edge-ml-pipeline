@@ -18,27 +18,61 @@ experiments:
 
   # ── Audio ────────────────────────────────────────────────────────────────
 
-  - name:      fsc22_classical_train
-    extractor: audio_classical
-    loader:    fsc22
-    # output defaults to data/processed/fsc22_classical_train
+  # - name:      fsc22_classical_train
+  #   extractor: audio_classical
+  #   loader:    fsc22
+  #   # output defaults to data/processed/fsc22_classical_train
 
   # - name:      fsc22_classical_val
   #   extractor: audio_classical
   #   loader:    fsc22
   #   split:     validation
 
-  # - name:      fsc22_melspec_train
+  - name:      fsc22_classical_lean_train
+    extractor: audio_classical
+    loader:    fsc22
+    split:     train
+    extractor_params:
+      n_mfcc: 40
+      features:
+        - mfcc
+        - spectral_centroid
+        - spectral_rolloff
+        - spectral_bandwidth
+        - spectral_contrast
+        - spectral_flatness
+        - chroma
+        - zcr
+        - rms
+
+  - name:      fsc22_classical_lean_val
+    extractor: audio_classical
+    loader:    fsc22
+    split:     validation
+    extractor_params:
+      n_mfcc: 40
+      features:
+        - mfcc
+        - spectral_centroid
+        - spectral_rolloff
+        - spectral_bandwidth
+        - spectral_contrast
+        - spectral_flatness
+        - chroma
+        - zcr
+        - rms
+
+  # - name:      fsc22_melspec_val
   #   extractor: audio_mel_spec
   #   loader:    fsc22
   #   extractor_params:
   #     duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
 
-  - name:      fsc22_mfcc_seq_train
-    extractor: audio_mfcc_seq
-    loader:    fsc22
-    extractor_params:
-      duration: 5.0
+  # - name:      fsc22_mfcc_seq_val
+  #   extractor: audio_mfcc_seq
+  #   loader:    fsc22
+  #   extractor_params:
+  #     duration: 5.0
     
 
   # ── Image ─────────────────────────────────────────────────────────────────

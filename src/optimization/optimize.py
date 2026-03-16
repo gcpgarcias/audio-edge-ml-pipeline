@@ -9,18 +9,30 @@ logs all metrics to MLflow.
 
 Usage
 -----
+    # --features is optional when the shortlist was produced by train.py ≥ current
+    # version, which logs features_dir as an MLflow param per candidate.
+    python -m src.optimization.optimize \\
+        --shortlist       data/models/tuned/shortlist.json \\
+        --output-dir      data/models/optimized \\
+        --experiment      birdeep-optimization
+
+    # Explicit override (or when shortlist lacks features_dir):
     python -m src.optimization.optimize \\
         --shortlist       data/models/tuned/shortlist.json \\
         --features        data/processed/birdeep_classical_train \\
         --output-dir      data/models/optimized \\
         --experiment      birdeep-optimization
 
-Output layout (``output_dir/<model>/``)
-----------------------------------------
+Output layout (``output_dir/<experiment>/<model>/``)
+-----------------------------------------------------
     model_fp32.onnx
     model_dynamic_int8.onnx
     model_static_int8.onnx
     model_float16.onnx
+    model_tflite_fp32.tflite        (Keras only)
+    model_tflite_dynamic.tflite     (Keras only)
+    model_tflite_int8.tflite        (Keras only)
+    model_tflite_float16.tflite     (Keras only)
     optimization_report.json        consumed by Stage 5c select_postopt()
 
 Stage 5c contract
@@ -50,8 +62,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.optimization.quantize import (
     convert_to_onnx,
+    convert_to_tflite_dynamic,
+    convert_to_tflite_float16,
+    convert_to_tflite_fp32,
+    convert_to_tflite_int8,
     detect_model_type,
     evaluate_onnx,
+    evaluate_tflite,
     find_model_file,
     optimize_dynamic_int8,
     optimize_float16,
@@ -94,18 +111,39 @@ def _optimize_one(
     output_dir:       Path,
     max_accuracy_drop: float,
     mlflow_module,
+    X_eval:           Optional[np.ndarray] = None,
+    y_eval:           Optional[np.ndarray] = None,
 ) -> Optional[dict]:
-    """Run all four optimization modes for one shortlist candidate.
+    """Run ONNX and (for Keras) TFLite optimization modes for one shortlist candidate.
 
-    Returns an optimization_report dict, or None if all modes failed.
+    Parameters
+    ----------
+    X, y:
+        Features and labels used for INT8 calibration (typically training split).
+    X_eval, y_eval:
+        Features and labels used for accuracy measurement.  When ``None``,
+        falls back to ``X`` / ``y`` (same data as calibration).  Pass a
+        held-out validation set here to get accuracy numbers that are
+        comparable to the tuning stage.
+
+    Returns an optimization_report dict, or None if ONNX conversion failed.
+    TFLite failures are non-fatal — results are omitted from the report but
+    the run continues.
     """
+    if X_eval is None:
+        X_eval = X
+    if y_eval is None:
+        y_eval = y
     model_name   = candidate["model"]
     run_id       = candidate.get("run_id", "")
     run_name     = candidate.get("run_name", model_name)
     artifact_uri = candidate.get("artifact_uri", "")
     val_acc_orig = candidate.get("val_accuracy", 0.0)
 
-    model_dir = output_dir / model_name
+    # Use run_name as the output directory so that two candidates with the
+    # same model type (e.g. cnn_mfcc vs cnn_melspec) don't overwrite each other.
+    dir_key   = run_name if run_name and run_name != model_name else model_name
+    model_dir = output_dir / dir_key
     model_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. Locate original model ──────────────────────────────────────────
@@ -126,7 +164,7 @@ def _optimize_one(
         logger.error("[%s] ONNX conversion failed: %s", model_name, exc)
         return None
 
-    fp32_metrics = evaluate_onnx(fp32_path, X, y, label_names)
+    fp32_metrics = evaluate_onnx(fp32_path, X_eval, y_eval, label_names)
     logger.info(
         "[%s] fp32        acc=%.4f  latency=%.3f ms  size=%.1f KB",
         model_name, fp32_metrics["accuracy"], fp32_metrics["latency_ms"],
@@ -148,7 +186,7 @@ def _optimize_one(
             fp32_path, model_dir / "model_dynamic_int8.onnx"
         ),
         "static_int8": lambda: optimize_static_int8(
-            fp32_path, model_dir / "model_static_int8.onnx", X
+            fp32_path, model_dir / "model_static_int8.onnx", X  # X = training/calibration data
         ),
         "float16": lambda: optimize_float16(
             fp32_path, model_dir / "model_float16.onnx"
@@ -158,7 +196,7 @@ def _optimize_one(
     for mode_key, fn in _mode_fns.items():
         try:
             opt_path = fn()
-            m = evaluate_onnx(opt_path, X, y, label_names)
+            m = evaluate_onnx(opt_path, X_eval, y_eval, label_names)
             modes[mode_key] = {
                 "path":       opt_path,
                 "size_kb":    opt_path.stat().st_size / 1024,
@@ -174,7 +212,7 @@ def _optimize_one(
         except Exception as exc:
             logger.warning("[%s] Mode '%s' failed (skipping): %s", model_name, mode_key, exc)
 
-    # ── 4. Select best mode ───────────────────────────────────────────────
+    # ── 4. ONNX: select best mode ─────────────────────────────────────────
     # Smallest model where accuracy_drop ≤ max_accuracy_drop.
     # fp32 is always the fallback (accuracy_drop = 0).
     reference_acc = fp32_metrics["accuracy"]
@@ -188,13 +226,70 @@ def _optimize_one(
     best_key = min(eligible, key=lambda k: eligible[k]["size_kb"])
     best     = modes[best_key]
     logger.info(
-        "[%s] Best mode: %s  (%.1f KB, acc=%.4f, drop=%.4f)",
+        "[%s] ONNX best:   %s  (%.1f KB, acc=%.4f, drop=%.4f)",
         model_name, best_key, best["size_kb"],
         best["accuracy"], reference_acc - best["accuracy"],
     )
 
-    # ── 5. Build report ───────────────────────────────────────────────────
-    benchmark_results = {
+    # ── 5. TFLite benchmark (Keras models only) ───────────────────────────
+    tflite_modes: dict[str, dict] = {}
+    tflite_best_key: Optional[str] = None
+    tflite_best: Optional[dict]    = None
+
+    if model_path.suffix in (".keras", ".h5"):
+        logger.info("[%s] — TFLite benchmark —", model_name)
+        _tflite_fns = {
+            "tflite_fp32":    lambda: convert_to_tflite_fp32(
+                model_path, model_dir / "model_tflite_fp32.tflite"
+            ),
+            "tflite_dynamic": lambda: convert_to_tflite_dynamic(
+                model_path, model_dir / "model_tflite_dynamic.tflite"
+            ),
+            "tflite_int8":    lambda: convert_to_tflite_int8(
+                model_path, model_dir / "model_tflite_int8.tflite", X
+            ),
+            "tflite_float16": lambda: convert_to_tflite_float16(
+                model_path, model_dir / "model_tflite_float16.tflite"
+            ),
+        }
+        for mode_key, fn in _tflite_fns.items():
+            try:
+                tflite_path = fn()
+                m = evaluate_tflite(tflite_path, X_eval, y_eval)
+                tflite_modes[mode_key] = {
+                    "path":       tflite_path,
+                    "size_kb":    tflite_path.stat().st_size / 1024,
+                    "accuracy":   m["accuracy"],
+                    "latency_ms": m["latency_ms"],
+                }
+                logger.info(
+                    "[%s] %-16s acc=%.4f  latency=%.3f ms  size=%.1f KB",
+                    model_name, mode_key,
+                    m["accuracy"], m["latency_ms"],
+                    tflite_modes[mode_key]["size_kb"],
+                )
+            except Exception as exc:
+                logger.warning("[%s] TFLite '%s' failed (skipping): %s", model_name, mode_key, exc)
+
+        if tflite_modes:
+            tflite_ref_acc = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
+            tflite_eligible = {
+                k: v for k, v in tflite_modes.items()
+                if tflite_ref_acc - v["accuracy"] <= max_accuracy_drop
+            }
+            if not tflite_eligible:
+                tflite_eligible = {min(tflite_modes, key=lambda k: tflite_modes[k]["size_kb"]): None}
+                tflite_eligible = {k: tflite_modes[k] for k in tflite_eligible}
+            tflite_best_key = min(tflite_eligible, key=lambda k: tflite_eligible[k]["size_kb"])
+            tflite_best     = tflite_modes[tflite_best_key]
+            logger.info(
+                "[%s] TFLite best: %s  (%.1f KB, acc=%.4f, drop=%.4f)",
+                model_name, tflite_best_key, tflite_best["size_kb"],
+                tflite_best["accuracy"], tflite_ref_acc - tflite_best["accuracy"],
+            )
+
+    # ── 6. Build report ───────────────────────────────────────────────────
+    onnx_benchmark_results = {
         k: {
             "size_kb":    v["size_kb"],
             "accuracy":   v["accuracy"],
@@ -203,6 +298,18 @@ def _optimize_one(
         }
         for k, v in modes.items()
     }
+    tflite_benchmark_results = (
+        {
+            k: {
+                "size_kb":    v["size_kb"],
+                "accuracy":   v["accuracy"],
+                "latency_ms": v["latency_ms"],
+                "path":       v["path"].name,
+            }
+            for k, v in tflite_modes.items()
+        }
+        if tflite_modes else None
+    )
 
     report = {
         "run_id":                 run_id,
@@ -211,7 +318,8 @@ def _optimize_one(
         "original_model_path":    str(model_path),
         "original_size_kb":       original_size_kb,
         "val_accuracy_original":  val_acc_orig,
-        "benchmark_results":      benchmark_results,
+        # ── ONNX results (used by Stage 5c) ──────────────────────────────
+        "benchmark_results":      onnx_benchmark_results,
         "optimized_model_path":   str(best["path"]),
         "optimized_size_kb":      best["size_kb"],
         "compression_ratio":      round(original_size_kb / best["size_kb"], 3),
@@ -220,6 +328,12 @@ def _optimize_one(
         "val_accuracy_optimized": best["accuracy"],
         "accuracy_drop":          round(reference_acc - best["accuracy"], 6),
         "latency_ms":             best["latency_ms"],
+        # ── TFLite results (Keras only, None for sklearn) ─────────────────
+        "tflite_results":         tflite_benchmark_results,
+        "tflite_best_mode":       tflite_best_key,
+        "tflite_optimized_size_kb":  tflite_best["size_kb"]  if tflite_best else None,
+        "tflite_val_accuracy":       tflite_best["accuracy"] if tflite_best else None,
+        "tflite_latency_ms":         tflite_best["latency_ms"] if tflite_best else None,
         "timestamp":              datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -227,23 +341,58 @@ def _optimize_one(
     report_path.write_text(json.dumps(report, indent=2))
     logger.info("[%s] Report → %s", model_name, report_path)
 
-    # ── 6. MLflow logging ─────────────────────────────────────────────────
+    # ── 7. MLflow logging ─────────────────────────────────────────────────
+    # One run per input model; every optimization mode is logged with a
+    # mode-prefixed metric so all variants are visible in the MLflow UI.
     if mlflow_module is not None:
-        with mlflow_module.start_run(run_name=f"opt_{model_name}"):
+        with mlflow_module.start_run(run_name=f"opt_{dir_key}"):
             mlflow_module.log_params({
                 "model":                       model_name,
                 "original_run_id":             run_id,
-                "selected_quantization_method": best_key,
+                "onnx_best_mode":              best_key,
+                "tflite_best_mode":            tflite_best_key or "n/a",
                 "max_accuracy_drop_threshold": max_accuracy_drop,
             })
-            for mode_key, m in benchmark_results.items():
-                mlflow_module.log_metric(f"{mode_key}_size_kb",    m["size_kb"])
-                mlflow_module.log_metric(f"{mode_key}_accuracy",   m["accuracy"])
-                mlflow_module.log_metric(f"{mode_key}_latency_ms", m["latency_ms"])
-            mlflow_module.log_metric("optimized_size_kb",      best["size_kb"])
-            mlflow_module.log_metric("compression_ratio",      original_size_kb / best["size_kb"])
-            mlflow_module.log_metric("val_accuracy_optimized", best["accuracy"])
-            mlflow_module.log_metric("accuracy_drop",          reference_acc - best["accuracy"])
+            # Original model
+            mlflow_module.log_metric("original_size_kb",     original_size_kb)
+            mlflow_module.log_metric("val_accuracy_original", val_acc_orig)
+
+            # All ONNX modes
+            for mode_key, mv in modes.items():
+                prefix = f"onnx_{mode_key}"
+                mlflow_module.log_metric(f"{prefix}_size_kb",          mv["size_kb"])
+                mlflow_module.log_metric(f"{prefix}_val_accuracy",     mv["accuracy"])
+                mlflow_module.log_metric(f"{prefix}_latency_ms",       mv["latency_ms"])
+                mlflow_module.log_metric(f"{prefix}_accuracy_drop",    reference_acc - mv["accuracy"])
+                mlflow_module.log_metric(f"{prefix}_compression_ratio", original_size_kb / mv["size_kb"])
+
+            # Summary: best ONNX selection
+            mlflow_module.log_metric("onnx_best_size_kb",          best["size_kb"])
+            mlflow_module.log_metric("onnx_best_val_accuracy",     best["accuracy"])
+            mlflow_module.log_metric("onnx_best_latency_ms",       best["latency_ms"])
+            mlflow_module.log_metric("onnx_best_accuracy_drop",    reference_acc - best["accuracy"])
+            mlflow_module.log_metric("onnx_best_compression_ratio", original_size_kb / best["size_kb"])
+
+            # All TFLite modes (Keras only)
+            if tflite_modes:
+                tflite_ref = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
+                for mode_key, mv in tflite_modes.items():
+                    prefix = f"onnx_{mode_key}"  # keep onnx_ prefix for consistent UI grouping
+                    mlflow_module.log_metric(f"{prefix}_size_kb",          mv["size_kb"])
+                    mlflow_module.log_metric(f"{prefix}_val_accuracy",     mv["accuracy"])
+                    mlflow_module.log_metric(f"{prefix}_latency_ms",       mv["latency_ms"])
+                    mlflow_module.log_metric(f"{prefix}_accuracy_drop",    tflite_ref - mv["accuracy"])
+                    mlflow_module.log_metric(f"{prefix}_compression_ratio", original_size_kb / mv["size_kb"])
+
+            # Summary: best TFLite selection
+            if tflite_best:
+                tflite_ref = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
+                mlflow_module.log_metric("tflite_best_size_kb",          tflite_best["size_kb"])
+                mlflow_module.log_metric("tflite_best_val_accuracy",     tflite_best["accuracy"])
+                mlflow_module.log_metric("tflite_best_latency_ms",       tflite_best["latency_ms"])
+                mlflow_module.log_metric("tflite_best_accuracy_drop",    tflite_ref - tflite_best["accuracy"])
+                mlflow_module.log_metric("tflite_best_compression_ratio", original_size_kb / tflite_best["size_kb"])
+
             mlflow_module.log_artifact(str(best["path"]))
             mlflow_module.log_artifact(str(report_path))
 
@@ -266,10 +415,21 @@ def main(argv=None) -> None:
              "Default: data/models/tuned/shortlist.json",
     )
     parser.add_argument(
-        "--features", metavar="DIR", required=True,
-        help="Path to a FeatureSet directory used for evaluation and INT8 "
-             "calibration.  Use the test split if available, otherwise the "
-             "training split is acceptable.",
+        "--features", metavar="DIR", required=False, default=None,
+        help="Path to a FeatureSet directory used for INT8 calibration.  "
+             "Optional when every shortlist candidate already carries a "
+             "'features_dir' field (logged by train.py).  Overrides "
+             "per-candidate paths when supplied.",
+    )
+    parser.add_argument(
+        "--features-eval", metavar="DIR", required=False, default=None,
+        dest="features_eval",
+        help="Path to a held-out FeatureSet directory used for accuracy "
+             "measurement (e.g. a val or test split).  When omitted, "
+             "accuracy is measured on the same features used for calibration, "
+             "which inflates sklearn results and gives non-comparable numbers. "
+             "Only candidates whose feature shape matches this directory will "
+             "use it; others fall back to calibration features.",
     )
     parser.add_argument(
         "--output-dir", metavar="DIR",
@@ -298,29 +458,8 @@ def main(argv=None) -> None:
         logger.error("Shortlist not found: %s", shortlist_path)
         sys.exit(1)
 
-    features_dir = Path(args.features)
-    if not features_dir.exists():
-        logger.error("Features directory not found: %s", features_dir)
-        sys.exit(1)
-
-    output_dir = Path(args.output_dir)
-
-    # ── Load features ──────────────────────────────────────────────────────
-    logger.info("Loading features from %s", features_dir)
-    feature_set  = FeaturePipeline.load(features_dir)
-    X            = feature_set.features.reshape(len(feature_set.features), -1).astype(np.float32)
-    y            = feature_set.labels
-    label_names  = feature_set.label_names or []
-    n_features   = X.shape[1]
-
-    if y is None:
-        logger.error("FeatureSet has no labels. Evaluation requires labelled data.")
-        sys.exit(1)
-
-    logger.info(
-        "Features: %d samples  %d classes  n_features=%d",
-        len(X), len(label_names), n_features,
-    )
+    safe_experiment = args.experiment.replace("/", "_").replace(" ", "_")
+    output_dir = Path(args.output_dir) / safe_experiment
 
     # ── Load shortlist ─────────────────────────────────────────────────────
     shortlist_doc  = json.loads(shortlist_path.read_text())
@@ -342,6 +481,109 @@ def main(argv=None) -> None:
         model_name = candidate.get("model", "unknown")
         logger.info("─" * 60)
         logger.info("Optimizing: %s", model_name)
+
+        # Resolve features directory: per-candidate field takes precedence;
+        # --features acts as a global override / fallback.
+        candidate_features = candidate.get("features_dir")
+        resolved_features  = args.features or candidate_features
+        if not resolved_features:
+            logger.error(
+                "[%s] No features directory available — pass --features or re-run "
+                "training so 'features_dir' is stored in the shortlist.",
+                model_name,
+            )
+            continue
+        features_dir = Path(resolved_features)
+        if not features_dir.exists():
+            logger.error("[%s] Features directory not found: %s", model_name, features_dir)
+            continue
+
+        logger.info("[%s] Loading calibration features from %s", model_name, features_dir)
+        feature_set = FeaturePipeline.load(features_dir)
+        X           = feature_set.features.reshape(len(feature_set.features), -1).astype(np.float32)
+        y           = feature_set.labels
+        label_names = feature_set.label_names or []
+        n_features  = X.shape[1]
+
+        if y is None:
+            logger.error("[%s] FeatureSet has no labels. Skipping.", model_name)
+            continue
+
+        # Apply class_filter if the model was trained on a subset of classes.
+        # Without this, label indices from a 27-class feature set are evaluated
+        # against a model with e.g. 6 output classes, giving ~chance accuracy.
+        class_filter_raw = candidate.get("class_filter")
+        if class_filter_raw:
+            import json as _json
+            if isinstance(class_filter_raw, list):
+                filter_set = set(class_filter_raw)
+            else:
+                filter_set = set(_json.loads(class_filter_raw))
+            allowed_indices = [i for i, n in enumerate(label_names) if n in filter_set]
+            if allowed_indices:
+                mask        = np.isin(y, allowed_indices)
+                X, y        = X[mask], y[mask]
+                idx_map     = {old: new for new, old in enumerate(allowed_indices)}
+                y           = np.array([idx_map[lbl] for lbl in y], dtype=y.dtype)
+                label_names = [label_names[i] for i in allowed_indices]
+                n_features  = X.shape[1]
+                logger.info(
+                    "[%s] class_filter applied: %d classes, %d samples (calibration)",
+                    model_name, len(label_names), len(X),
+                )
+
+        logger.info(
+            "[%s] Calibration features: %d samples  %d classes  n_features=%d",
+            model_name, len(X), len(label_names), n_features,
+        )
+
+        # ── Load eval features (held-out set for accuracy measurement) ─────
+        # Resolution order:
+        #   1. --features-eval CLI arg (global override)
+        #   2. features_eval_dir from the shortlist candidate (per-candidate)
+        #   3. None → fallback to calibration features inside _optimize_one
+        X_eval: Optional[np.ndarray] = None
+        y_eval: Optional[np.ndarray] = None
+        resolved_features_eval = args.features_eval or candidate.get("features_eval_dir")
+        if resolved_features_eval:
+            eval_dir = Path(resolved_features_eval)
+            if not eval_dir.exists():
+                logger.warning(
+                    "[%s] features_eval_dir not found: %s — falling back to calibration features",
+                    model_name, eval_dir,
+                )
+            else:
+                eval_fs      = FeaturePipeline.load(eval_dir)
+                X_eval_raw   = eval_fs.features.reshape(len(eval_fs.features), -1).astype(np.float32)
+                y_eval_raw   = eval_fs.labels
+                if X_eval_raw.shape[1] != n_features:
+                    logger.warning(
+                        "[%s] --features-eval shape mismatch (%d vs %d) — "
+                        "falling back to calibration features for accuracy",
+                        model_name, X_eval_raw.shape[1], n_features,
+                    )
+                elif y_eval_raw is None:
+                    logger.warning(
+                        "[%s] --features-eval has no labels — falling back to calibration features",
+                        model_name,
+                    )
+                else:
+                    if class_filter_raw and allowed_indices:
+                        eval_idx_map = {old: new for new, old in enumerate(allowed_indices)}
+                        eval_mask    = np.isin(y_eval_raw, allowed_indices)
+                        X_eval       = X_eval_raw[eval_mask]
+                        y_eval       = np.array(
+                            [eval_idx_map[lbl] for lbl in y_eval_raw[eval_mask]],
+                            dtype=y_eval_raw.dtype,
+                        )
+                    else:
+                        X_eval = X_eval_raw
+                        y_eval = y_eval_raw
+                    logger.info(
+                        "[%s] Eval features: %d samples from %s",
+                        model_name, len(X_eval), eval_dir,
+                    )
+
         try:
             report = _optimize_one(
                 candidate         = candidate,
@@ -352,6 +594,8 @@ def main(argv=None) -> None:
                 output_dir        = output_dir,
                 max_accuracy_drop = args.max_accuracy_drop,
                 mlflow_module     = mlflow_module,
+                X_eval            = X_eval,
+                y_eval            = y_eval,
             )
             if report:
                 reports.append(report)
@@ -363,31 +607,42 @@ def main(argv=None) -> None:
         sys.exit(1)
 
     # ── Summary table ─────────────────────────────────────────────────────
-    logger.info("─" * 60)
+    sep = "─" * 140
+    logger.info(sep)
     logger.info(
-        "  %-16s  %8s  %10s  %8s  %10s  %8s",
-        "model", "orig_kb", "opt_kb", "ratio", "method", "acc_drop",
+        "  %-40s  %8s  │  %10s  %14s  %8s  %10s  │  %10s  %14s  %10s",
+        "run", "orig_kb",
+        "onnx_kb", "onnx_method", "acc_drop", "lat_ms",
+        "tflite_kb", "tflite_method", "lat_ms",
     )
-    logger.info("─" * 60)
+    logger.info(sep)
     for r in sorted(reports, key=lambda x: x["optimized_size_kb"]):
+        tflite_kb     = r.get("tflite_optimized_size_kb")
+        tflite_method = r.get("tflite_best_mode") or "n/a"
+        tflite_lat    = r.get("tflite_latency_ms")
+        label = r.get("run_name") or r["model_name"]
         logger.info(
-            "  %-16s  %8.1f  %10.1f  %8.2f  %10s  %8.4f",
-            r["model_name"],
+            "  %-40s  %8.1f  │  %10.1f  %14s  %8.4f  %10.3f  │  %10s  %14s  %10s",
+            label,
             r["original_size_kb"],
             r["optimized_size_kb"],
-            r["compression_ratio"],
             r["quantization_method"],
             r["accuracy_drop"],
+            r["latency_ms"],
+            f"{tflite_kb:.1f}"  if tflite_kb  is not None else "n/a",
+            tflite_method,
+            f"{tflite_lat:.3f}" if tflite_lat is not None else "n/a",
         )
-    logger.info("─" * 60)
+    logger.info(sep)
     logger.info(
-        "%d model(s) optimized. Run Stage 5c to select the best:\n"
-        "  python -m src.training.select --post-opt \\\n"
-        "    --shortlist %s \\\n"
-        "    --opt-dir %s \\\n"
-        "    --max-size-kb 256 --metric val_accuracy_optimized \\\n"
+        "%d model(s) optimized → %s\n"
+        "Run Stage 5c to select the best:\n"
+        "  python -m src.training.select --post-opt\n"
+        "    --shortlist %s\n"
+        "    --opt-dir %s\n"
+        "    --max-size-kb 256 --metric val_accuracy_optimized\n"
         "    --output data/models/best_model.json",
-        len(reports), shortlist_path, output_dir,
+        len(reports), output_dir, shortlist_path, output_dir,
     )
 
 

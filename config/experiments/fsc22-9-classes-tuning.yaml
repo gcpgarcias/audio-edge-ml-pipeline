@@ -12,7 +12,7 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-6-classes-dtree-tuning-lean
+experiment:  fsc22-9-classes-tuning
 mlflow_uri:  mlruns/
 class_filter:
   - Fire
@@ -21,6 +21,9 @@ class_filter:
   - Silence
   - Helicopter
   - Gunshot
+  - Chainsaw
+  - Handsaw
+  - WoodChop
 
 
 val_split:   0.2
@@ -59,19 +62,11 @@ runs:
 
   # ── Classical ML ──────────────────────────────────────────────────────────
 
-  # - model:        lda
-  #   name:         fsc22_9_classes_lda_sweep
-  #   features_dir: data/processed/fsc22_classical_train
-  #   grid:
-  #     solver: [svd, lsqr]
-
-  # - model:          pca_lda
-  #   name:           fsc22_6_classes_lean_lda_pca_sweep
-  #   features_dir:   data/processed/fsc22_classical_lean_train
-  #   features_test:  data/processed/fsc22_classical_lean_val
-  #   grid:
-  #     n_components: [50, 80, 100]
-  #     solver:       [svd, lsqr]
+  - model:        lda
+    name:         fsc22_9_classes_lda_sweep
+    features_dir: data/processed/fsc22_classical_train
+    grid:
+      solver: [svd, lsqr]
 
   # - model:        svm
   #   name:         fsc22_9_classes_svm_sweep
@@ -80,10 +75,9 @@ runs:
   #     C:      [0.1, 1.0, 10.0, 100.0]
   #     kernel: [rbf, linear]
 
-  - model:          decision_tree
-    name:           fsc22_6_classes_lean_decision_tree_sweep
-    features_dir:   data/processed/fsc22_classical_lean_train
-    features_test:  data/processed/fsc22_classical_lean_val
+  - model:        decision_tree
+    name:         fsc22_9_classes_decision_tree_sweep
+    features_dir: data/processed/fsc22_classical_train
     grid:
       max_depth:        [5, 10, 20, null]
       min_samples_leaf: [1, 2, 5]
@@ -104,57 +98,45 @@ runs:
   #     weights:     [uniform, distance]
   #     metric:      [minkowski, cosine]
 
-
-  # - model:          pca_knn
-  #   name:           fsc22_6_classes_lean_knn_pca_sweep
-  #   features_dir:   data/processed/fsc22_classical_lean_train
-  #   features_test:  data/processed/fsc22_classical_lean_val
-  #   grid:
-  #     n_components: [50, 80, 100]
-  #     n_neighbors:  [3, 5, 7, 11]
-  #     metric:       [minkowski, cosine]
-
-  # - model:          pca_svm
-  #   name:           fsc22_6_classes_lean_pca_svm_sweep
-  #   features_dir:   data/processed/fsc22_classical_lean_train
-  #   features_test:  data/processed/fsc22_classical_lean_val
-  #   grid:
-  #     n_components: [50, 80, 100]
-  #     C:            [0.1, 1.0, 10.0]
-  #     kernel:       [rbf, linear]
-  #     gamma:        [scale, auto]
+  - model:        pca_svm
+    name:         fsc22_9_classes_pca_svm_sweep
+    features_dir: data/processed/fsc22_classical_train
+    grid:
+      n_components: [30, 50, 80]
+      C:            [0.1, 1.0, 10.0]
+      kernel:       [rbf, linear]
+      gamma:        [scale, auto]
 
   # ── Deep models ───────────────────────────────────────────────────────────
 
-  # - model:          mlp
-  #   name:           fsc22_6_classes_lean_mlp_sweep
-  #   features_dir:   data/processed/fsc22_classical_lean_train
-  #   features_test:  data/processed/fsc22_classical_lean_val
-  #   search_space:
-  #     hidden_units:  [[64, 32], [128, 64], [256, 128], [512, 256], [256, 128, 64]]
-  #     dropout:       {type: float,      low: 0.1,    high: 0.5}
-  #     batch_size:    {type: categorical, choices: [16, 32, 64]}
-  #     learning_rate: {type: loguniform,  low: 0.00005, high: 0.01}
+  - model:        mlp
+    name:         fsc22_9_classes_mlp_sweep
+    features_dir: data/processed/fsc22_classical_train
+    search_space:
+      hidden_units:  [[64, 32], [128, 64], [256, 128], [512, 256], [256, 128, 64]]
+      dropout:       {type: float,      low: 0.1,    high: 0.5}
+      batch_size:    {type: categorical, choices: [16, 32, 64]}
+      learning_rate: {type: loguniform,  low: 0.00005, high: 0.01}
 
-  # - model:        cnn
-  #   name:         fsc22_9_classes_cnn_melspec_sweep
-  #   features_dir: data/processed/fsc22_melspec_train
-  #   search_space:
-  #     filters:       {type: categorical, choices: [16, 32, 64]}
-  #     n_blocks:      {type: int,         low: 2, high: 4}
-  #     dropout:       {type: float,       low: 0.1, high: 0.5}
-  #     batch_size:    {type: categorical,  choices: [16, 32]}
-  #     learning_rate: {type: loguniform,   low: 0.00005, high: 0.01}
+  - model:        cnn
+    name:         fsc22_9_classes_cnn_melspec_sweep
+    features_dir: data/processed/fsc22_melspec_train
+    search_space:
+      filters:       {type: categorical, choices: [16, 32, 64]}
+      n_blocks:      {type: int,         low: 2, high: 4}
+      dropout:       {type: float,       low: 0.1, high: 0.5}
+      batch_size:    {type: categorical,  choices: [16, 32]}
+      learning_rate: {type: loguniform,   low: 0.00005, high: 0.01}
 
-  # - model:        cnn
-  #   name:         fsc22_9_classes_cnn_mfcc_sweep
-  #   features_dir: data/processed/fsc22_mfcc_seq_train
-  #   search_space:
-  #     filters:       {type: categorical, choices: [16, 32, 64]}
-  #     n_blocks:      {type: int,         low: 2, high: 4}
-  #     dropout:       {type: float,       low: 0.1, high: 0.5}
-  #     batch_size:    {type: categorical,  choices: [16, 32]}
-  #     learning_rate: {type: loguniform,   low: 0.00005, high: 0.01}
+  - model:        cnn
+    name:         fsc22_9_classes_cnn_mfcc_sweep
+    features_dir: data/processed/fsc22_mfcc_seq_train
+    search_space:
+      filters:       {type: categorical, choices: [16, 32, 64]}
+      n_blocks:      {type: int,         low: 2, high: 4}
+      dropout:       {type: float,       low: 0.1, high: 0.5}
+      batch_size:    {type: categorical,  choices: [16, 32]}
+      learning_rate: {type: loguniform,   low: 0.00005, high: 0.01}
 
   # - model:        rnn
   #   name:         fsc22_6_classes_rnn_mfcc_sweep

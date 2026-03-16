@@ -132,6 +132,16 @@ def _build_estimator(model_name: str):
             ("pca",    PCA(random_state=42)),
             ("svm",    SVC(probability=True, class_weight="balanced")),
         ]),
+        "pca_lda": lambda: Pipeline([
+            ("scaler", StandardScaler()),
+            ("pca",    PCA(random_state=42)),
+            ("lda",    LinearDiscriminantAnalysis()),
+        ]),
+        "pca_knn": lambda: Pipeline([
+            ("scaler", StandardScaler()),
+            ("pca",    PCA(random_state=42)),
+            ("knn",    KNeighborsClassifier()),
+        ]),
     }
     if model_name not in factories:
         raise ValueError(
@@ -146,6 +156,16 @@ _PARAM_PREFIXES: dict[str, dict[str, str]] = {
         "C":            "svm__C",
         "kernel":       "svm__kernel",
         "gamma":        "svm__gamma",
+    },
+    "pca_lda": {
+        "n_components":     "pca__n_components",
+        "n_components_lda": "lda__n_components",
+        "solver":           "lda__solver",
+    },
+    "pca_knn": {
+        "n_components": "pca__n_components",
+        "n_neighbors":  "knn__n_neighbors",
+        "metric":       "knn__metric",
     },
 }
 
@@ -305,6 +325,8 @@ def _tune_classical(
         "model_size_kb": model_size_kb,
         "best_params":   params_str,
         "artifact_uri":  str(output_dir),
+        "features_dir":  str(features_dir),
+        "class_filter":  class_filter or None,
     }
 
 
@@ -488,6 +510,8 @@ def _tune_deep_optuna(
             "model_size_kb": result.model_size_kb,
             "best_params":   {k: str(v) for k, v in sampled.items()},
             "artifact_uri":  str(trial_dir),
+            "features_dir":  str(features_dir),
+            "class_filter":  class_filter or None,
         }
 
         logger.info(

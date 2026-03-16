@@ -1,0 +1,148 @@
+# Training pipeline — multi-model config
+#
+# Usage:
+#   python -m src.training.train --config config/training.yaml
+#
+# Top-level fields are inherited by every run as defaults.
+# Any run can override them by setting the same key locally.
+#
+# Required top-level keys: features_dir, output_dir
+
+# ── Defaults ────────────────────────────────────────────────────────────────
+
+features_dir:      data/processed/fsc22_classical_train
+output_dir:        data/models
+experiment:        fsc22-6-classes-train-2
+class_filter:
+  - Fire
+  - Thunderstorm
+  - WaterDrops
+  - Silence
+  - Helicopter
+  - Gunshot
+
+# mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
+#                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
+
+val_split:         0.2
+
+# Optional held-out test FeatureSet (same feature type as features_dir)
+# features_test_dir: data/processed/fsc22_classical_test
+
+# ── Runs ────────────────────────────────────────────────────────────────────
+
+runs:
+
+  # ── Classical models (flat audio_classical features) ──────────────────────
+
+  - model: svm
+    name:  fsc22_6_classes_svm_train_2
+    params:
+      C:      1.0
+      kernel: rbf
+      gamma:  scale
+
+  - model: svm
+    name:  fsc22_6_classes_svm_c10_train_2
+    params:
+      C:      10.0
+      kernel: rbf
+
+  - model: lda
+    name:  fsc22_6_classes_lda_train_2
+
+  - model: decision_tree
+    name:  fsc22_6_classes_dtree_train_2
+    params:
+      max_depth:        10
+      min_samples_leaf: 2
+
+  # - model: random_forest
+  #   name:  fsc22_6classes_rf
+  #   params:
+  #     n_estimators: 200
+  #     max_depth:    20
+
+  - model: knn
+    name:  fsc22_6_classes_knn_train_2
+    params:
+      n_neighbors: 7
+      metric:      minkowski
+
+  # - model: kmeans
+  #   name:  fsc22_6_classes_kmeans
+  #   # n_clusters defaults to number of classes in the FeatureSet
+
+  - model: pca_svm
+    name:  fsc22_6_classes_pca_svm_train_2
+    params:
+      n_components: 50
+      C:            1.0
+      kernel:       rbf
+
+# ── Deep models on mel spectrogram features ───────────────────────────────
+  # Un-comment and point features_dir at a deep FeatureSet, e.g.
+  #   data/processed/fsc22_melspec_train  (shape: N × H × W)
+  # or
+  #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
+
+  - model: mlp
+    name:  fsc22_6_classes_mlp_train_2
+    features_dir: data/processed/fsc22_classical_train
+    params:
+      hidden_units: [256, 128]
+      dropout:      0.4
+      epochs:       50
+      batch_size:   32
+
+  - model: cnn
+    name:  fsc22_6_classes_cnn_melspec_train_2
+    features_dir: data/processed/fsc22_melspec_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: cnn
+    name:  fsc22_6_classes_cnn_mfcc_train_2
+    features_dir: data/processed/fsc22_mfcc_seq_train
+    params:
+      filters:    32
+      n_blocks:   3
+      dropout:    0.3
+      epochs:     100
+      batch_size: 32
+
+  - model: rnn
+    name:  fsc22_6_classes_rnn_train_2
+    features_dir: data/processed/fsc22_mfcc_seq_train
+    params:
+      units:      128
+      n_layers:   2
+      dropout:    0.3
+      epochs:     50
+      batch_size: 32
+
+  - model: transformer
+    name:  fsc22_6_classes_transformer_melspec_train_2
+    features_dir: data/processed/fsc22_melspec_train
+    params:
+      num_heads:  4
+      ff_dim:     128
+      n_blocks:   2
+      dropout:    0.1
+      epochs:     100
+      batch_size: 32
+
+  - model: transformer
+    name:  fsc22_6_classes_transformer_mfcc_train_2
+    features_dir: data/processed/fsc22_mfcc_seq_train
+    params:
+      num_heads:  4
+      ff_dim:     128
+      n_blocks:   2
+      dropout:    0.1
+      epochs:     50
+      batch_size: 32

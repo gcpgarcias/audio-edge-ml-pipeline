@@ -195,7 +195,7 @@ python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
 ### Registered Trainers (11 total)
 
 ```
-Classical:  svm  lda  decision_tree  random_forest  knn  kmeans  pca_svm
+Classical:  svm  lda  decision_tree  random_forest  knn  kmeans  pca_svm  pca_lda  pca_knn
 Deep:       mlp  cnn  rnn  transformer
 ```
 
@@ -286,7 +286,7 @@ export MLFLOW_TRACKING_URI=http://localhost:5000
 ```
 
 **Stage 6 contract** — each optimised model must write:
-`data/models/optimized/<model_name>/optimization_report.json`
+`data/models/optimized/<experiment>/<model_name>/optimization_report.json`
 with fields: `optimized_size_kb`, `val_accuracy_optimized`, `accuracy_drop`,
 `quantization_method`, `latency_ms`, etc.  See `select.py` module docstring for
 the full schema.

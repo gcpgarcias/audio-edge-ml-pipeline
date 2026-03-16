@@ -9,24 +9,32 @@ classifiers and clustering algorithms:
 
 Feature groups (each aggregated as mean + standard deviation over time)
 -----------------------------------------------------------------------
-Group               Dimension   Description
-------------------- ----------- ----------------------------------------
-MFCCs               2 × n_mfcc  Mel-frequency cepstral coefficients
-Delta MFCCs         2 × n_mfcc  First-order MFCC derivatives
-Delta-delta MFCCs   2 × n_mfcc  Second-order MFCC derivatives
-Spectral centroid   2           Weighted mean frequency
-Spectral rolloff    2           Frequency below which 85 % of energy lies
-Spectral bandwidth  2           Spread of energy around the centroid
-Spectral contrast   2 × 7       Peak-valley contrast per sub-band
-Spectral flatness   2           Tonality vs. noise measure
-Chroma STFT         2 × 12      Energy per pitch class (C … B)
-Zero-crossing rate  2           Rate of sign changes in the waveform
-RMS energy          2           Root-mean-square amplitude
-Tonnetz             2 × 6       Tonal centroid (fifths, minor/major thirds)
-------------------- ----------- ----------------------------------------
+Group               Key                 Dimension   Description
+------------------- ------------------- ----------- ----------------------------------------
+MFCCs               mfcc                2 × n_mfcc  Mel-frequency cepstral coefficients
+Delta MFCCs         delta_mfcc          2 × n_mfcc  First-order MFCC derivatives
+Delta-delta MFCCs   delta2_mfcc         2 × n_mfcc  Second-order MFCC derivatives
+Spectral centroid   spectral_centroid   2           Weighted mean frequency
+Spectral rolloff    spectral_rolloff    2           Frequency below which 85 % of energy lies
+Spectral bandwidth  spectral_bandwidth  2           Spread of energy around the centroid
+Spectral contrast   spectral_contrast   2 × 7       Peak-valley contrast per sub-band
+Spectral flatness   spectral_flatness   2           Tonality vs. noise measure
+Chroma STFT         chroma              2 × 12      Energy per pitch class (C … B)
+Zero-crossing rate  zcr                 2           Rate of sign changes in the waveform
+RMS energy          rms                 2           Root-mean-square amplitude
+Tonnetz             tonnetz             2 × 6       Tonal centroid (fifths, minor/major thirds)
+------------------- ------------------- ----------- ----------------------------------------
 
-Default total with n_mfcc=40: 3×(2×40) + 2+2+2+(2×7)+2+(2×12)+2+2+(2×6)
-                             = 240 + 2+2+2+14+2+24+2+2+12 = 302 features
+Default total with n_mfcc=40 (all groups):
+    3×(2×40) + 2+2+2+(2×7)+2+(2×12)+2+2+(2×6) = 302 features
+
+Selecting a subset via the ``features`` parameter drops the unwanted groups
+and recomputes the dimension accordingly.  Example lean vector (no delta
+MFCCs, no Tonnetz):
+
+    features: [mfcc, spectral_centroid, spectral_rolloff, spectral_bandwidth,
+               spectral_contrast, spectral_flatness, chroma, zcr, rms]
+    → 2×40 + 2+2+2+14+2+24+2+2 = 130 features
 """
 
 from __future__ import annotations
@@ -43,6 +51,35 @@ from ..registry import register
 # Minimum audio segment duration (seconds) used when start_time == end_time
 # or the requested segment is unreasonably short.
 _MIN_DURATION: float = 0.1
+
+# Ordered list of all valid feature group keys.
+_ALL_FEATURES: list[str] = [
+    "mfcc",
+    "delta_mfcc",
+    "delta2_mfcc",
+    "spectral_centroid",
+    "spectral_rolloff",
+    "spectral_bandwidth",
+    "spectral_contrast",
+    "spectral_flatness",
+    "chroma",
+    "zcr",
+    "rms",
+    "tonnetz",
+]
+
+# Fixed dimension of each group (independent of n_mfcc where applicable).
+_FIXED_DIMS: dict[str, int] = {
+    "spectral_centroid": 2,
+    "spectral_rolloff":  2,
+    "spectral_bandwidth": 2,
+    "spectral_contrast": 14,  # 2 × 7 sub-bands
+    "spectral_flatness": 2,
+    "chroma":            24,  # 2 × 12 pitch classes
+    "zcr":               2,
+    "rms":               2,
+    "tonnetz":           12,  # 2 × 6
+}
 
 
 def _mean_std(x: np.ndarray) -> np.ndarray:
@@ -72,6 +109,14 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
     min_duration:
         Minimum segment duration (seconds).  Segments shorter than this are
         zero-padded.
+    features:
+        List of feature group keys to include.  Order is preserved.
+        Defaults to all groups.  Valid keys::
+
+            mfcc  delta_mfcc  delta2_mfcc
+            spectral_centroid  spectral_rolloff  spectral_bandwidth
+            spectral_contrast  spectral_flatness
+            chroma  zcr  rms  tonnetz
     """
 
     name         = "audio_classical"
@@ -80,17 +125,30 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
 
     def __init__(
         self,
-        sample_rate: int   = 22050,
-        n_mfcc:      int   = 40,
-        n_fft:       int   = 1024,
-        hop_length:  int   = 512,
+        sample_rate:  int   = 22050,
+        n_mfcc:       int   = 40,
+        n_fft:        int   = 1024,
+        hop_length:   int   = 512,
         min_duration: float = _MIN_DURATION,
+        features:     Optional[list[str]] = None,
     ) -> None:
         self.sample_rate  = sample_rate
         self.n_mfcc       = n_mfcc
         self.n_fft        = n_fft
         self.hop_length   = hop_length
         self.min_duration = min_duration
+
+        if features is None:
+            self.features = list(_ALL_FEATURES)
+        else:
+            unknown = set(features) - set(_ALL_FEATURES)
+            if unknown:
+                raise ValueError(
+                    f"Unknown feature group(s): {sorted(unknown)}. "
+                    f"Valid keys: {_ALL_FEATURES}"
+                )
+            # Preserve canonical ordering regardless of input order.
+            self.features = [k for k in _ALL_FEATURES if k in set(features)]
 
     # ------------------------------------------------------------------
     # Public interface
@@ -105,28 +163,25 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
     ) -> np.ndarray:
         """Extract classical features from *sample_path*.
 
-        Parameters
-        ----------
-        sample_path:
-            Path to a WAV (or any librosa-readable) audio file.
-        start_time:
-            Segment onset in seconds (None → beginning of file).
-        end_time:
-            Segment offset in seconds (None → end of file).
-
         Returns
         -------
         np.ndarray
-            1-D float32 feature vector of length
-            ``3 * 2 * n_mfcc + 2 + 2 + 2 + 14 + 2 + 24 + 2 + 2 + 12``.
+            1-D float32 feature vector of length :attr:`feature_dim`.
         """
         audio = self._load_segment(sample_path, start_time, end_time)
         return self._compute_features(audio).astype(np.float32)
 
     @property
     def feature_dim(self) -> int:
-        """Total number of features per sample."""
-        return 3 * 2 * self.n_mfcc + 2 + 2 + 2 + 14 + 2 + 24 + 2 + 2 + 12
+        """Total number of features for the current ``features`` selection."""
+        mfcc_dim = 2 * self.n_mfcc
+        total = 0
+        for key in self.features:
+            if key in ("mfcc", "delta_mfcc", "delta2_mfcc"):
+                total += mfcc_dim
+            else:
+                total += _FIXED_DIMS[key]
+        return total
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -169,55 +224,82 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
         hop = self.hop_length
         n   = self.n_fft
 
-        # ---- MFCCs and temporal derivatives ----
-        mfcc    = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=self.n_mfcc,
+        active = set(self.features)
+
+        # ---- Compute only what is needed ----
+
+        # MFCCs (base; also required for delta/delta2 and tonnetz via chroma)
+        mfcc = None
+        if active & {"mfcc", "delta_mfcc", "delta2_mfcc"}:
+            mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=self.n_mfcc,
                                         n_fft=n, hop_length=hop)
-        d_mfcc  = librosa.feature.delta(mfcc)
-        dd_mfcc = librosa.feature.delta(mfcc, order=2)
 
-        # ---- Spectral features ----
-        spec_centroid  = librosa.feature.spectral_centroid(
-            y=audio, sr=sr, n_fft=n, hop_length=hop)
-        spec_rolloff   = librosa.feature.spectral_rolloff(
-            y=audio, sr=sr, n_fft=n, hop_length=hop)
-        spec_bandwidth = librosa.feature.spectral_bandwidth(
-            y=audio, sr=sr, n_fft=n, hop_length=hop)
-        spec_contrast  = librosa.feature.spectral_contrast(
-            y=audio, sr=sr, n_fft=n, hop_length=hop)   # shape (7, T)
-        spec_flatness  = librosa.feature.spectral_flatness(
-            y=audio, n_fft=n, hop_length=hop)
+        d_mfcc = None
+        if "delta_mfcc" in active:
+            d_mfcc = librosa.feature.delta(mfcc)
 
-        # ---- Chroma ----
-        chroma = librosa.feature.chroma_stft(
-            y=audio, sr=sr, n_fft=n, hop_length=hop)   # shape (12, T)
+        dd_mfcc = None
+        if "delta2_mfcc" in active:
+            dd_mfcc = librosa.feature.delta(mfcc, order=2)
 
-        # ---- Zero-crossing rate ----
-        zcr = librosa.feature.zero_crossing_rate(y=audio, hop_length=hop)
+        spec_centroid = None
+        if "spectral_centroid" in active:
+            spec_centroid = librosa.feature.spectral_centroid(
+                y=audio, sr=sr, n_fft=n, hop_length=hop)
 
-        # ---- RMS energy ----
-        rms = librosa.feature.rms(y=audio, frame_length=n, hop_length=hop)
+        spec_rolloff = None
+        if "spectral_rolloff" in active:
+            spec_rolloff = librosa.feature.spectral_rolloff(
+                y=audio, sr=sr, n_fft=n, hop_length=hop)
 
-        # ---- Tonnetz ----
-        # Pass the already-computed chroma_stft directly to avoid an internal
-        # CQT that librosa.feature.tonnetz runs when given raw audio — the CQT
-        # downsamples the signal at each octave and raises spurious n_fft
-        # warnings on short (padded) segments.
-        tonnetz  = librosa.feature.tonnetz(chroma=chroma)  # shape (6, T)
+        spec_bandwidth = None
+        if "spectral_bandwidth" in active:
+            spec_bandwidth = librosa.feature.spectral_bandwidth(
+                y=audio, sr=sr, n_fft=n, hop_length=hop)
 
-        # ---- Aggregate: mean + std over time axis ----
-        parts = [
-            _mean_std(mfcc),             # 2 * n_mfcc
-            _mean_std(d_mfcc),           # 2 * n_mfcc
-            _mean_std(dd_mfcc),          # 2 * n_mfcc
-            _scalar_mean_std(spec_centroid),   # 2
-            _scalar_mean_std(spec_rolloff),    # 2
-            _scalar_mean_std(spec_bandwidth),  # 2
-            _mean_std(spec_contrast),    # 2 * 7 = 14
-            _scalar_mean_std(spec_flatness),   # 2
-            _mean_std(chroma),           # 2 * 12 = 24
-            _scalar_mean_std(zcr),       # 2
-            _scalar_mean_std(rms),       # 2
-            _mean_std(tonnetz),          # 2 * 6 = 12
-        ]
+        spec_contrast = None
+        if "spectral_contrast" in active:
+            spec_contrast = librosa.feature.spectral_contrast(
+                y=audio, sr=sr, n_fft=n, hop_length=hop)
 
+        spec_flatness = None
+        if "spectral_flatness" in active:
+            spec_flatness = librosa.feature.spectral_flatness(
+                y=audio, n_fft=n, hop_length=hop)
+
+        # Chroma is needed for both chroma and tonnetz
+        chroma = None
+        if active & {"chroma", "tonnetz"}:
+            chroma = librosa.feature.chroma_stft(
+                y=audio, sr=sr, n_fft=n, hop_length=hop)
+
+        zcr = None
+        if "zcr" in active:
+            zcr = librosa.feature.zero_crossing_rate(y=audio, hop_length=hop)
+
+        rms = None
+        if "rms" in active:
+            rms = librosa.feature.rms(y=audio, frame_length=n, hop_length=hop)
+
+        tonnetz = None
+        if "tonnetz" in active:
+            tonnetz = librosa.feature.tonnetz(chroma=chroma)
+
+        # ---- Aggregate in canonical order ----
+        _aggregators = {
+            "mfcc":               lambda: _mean_std(mfcc),
+            "delta_mfcc":         lambda: _mean_std(d_mfcc),
+            "delta2_mfcc":        lambda: _mean_std(dd_mfcc),
+            "spectral_centroid":  lambda: _scalar_mean_std(spec_centroid),
+            "spectral_rolloff":   lambda: _scalar_mean_std(spec_rolloff),
+            "spectral_bandwidth": lambda: _scalar_mean_std(spec_bandwidth),
+            "spectral_contrast":  lambda: _mean_std(spec_contrast),
+            "spectral_flatness":  lambda: _scalar_mean_std(spec_flatness),
+            "chroma":             lambda: _mean_std(chroma),
+            "zcr":                lambda: _scalar_mean_std(zcr),
+            "rms":                lambda: _scalar_mean_std(rms),
+            "tonnetz":            lambda: _mean_std(tonnetz),
+        }
+
+        parts = [_aggregators[key]() for key in self.features]
         return np.concatenate(parts)

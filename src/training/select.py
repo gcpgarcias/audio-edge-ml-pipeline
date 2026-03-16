@@ -123,16 +123,29 @@ def _fetch_runs(mlflow, experiment_name: str) -> list[dict]:
     for run in runs:
         m = run.data.metrics
         p = run.data.params
+
+        features_dir = p.get("features_dir")
+        # Prefer an explicitly logged eval dir; fall back to convention
+        # (_train → _val) if the derived path exists on disk.
+        features_eval_dir = p.get("features_eval_dir")
+        if features_eval_dir is None and features_dir:
+            candidate_eval = features_dir.replace("_train", "_val")
+            if candidate_eval != features_dir and Path(candidate_eval).exists():
+                features_eval_dir = candidate_eval
+
         records.append({
-            "run_id":        run.info.run_id,
-            "run_name":      run.info.run_name or run.info.run_id[:8],
-            "model":         p.get("model", "unknown"),
-            "val_accuracy":  m.get("val_accuracy"),
-            "val_f1_macro":  m.get("val_f1_macro"),
-            "model_size_kb": m.get("model_size_kb"),
-            "params":        p,
-            "metrics":       m,
-            "artifact_uri":  run.info.artifact_uri,
+            "run_id":             run.info.run_id,
+            "run_name":           run.info.run_name or run.info.run_id[:8],
+            "model":              p.get("model", "unknown"),
+            "val_accuracy":       m.get("val_accuracy"),
+            "val_f1_macro":       m.get("val_f1_macro"),
+            "model_size_kb":      m.get("model_size_kb"),
+            "params":             p,
+            "metrics":            m,
+            "artifact_uri":       run.info.artifact_uri,
+            "features_dir":       features_dir,
+            "features_eval_dir":  features_eval_dir,
+            "class_filter":       p.get("class_filter"),
         })
     return records
 
@@ -199,10 +212,11 @@ def select_preopt(
 
 
 def write_shortlist(
-    records:    list[dict],
-    path:       Path,
-    experiment: str,
-    metric:     str = "val_f1_macro",
+    records:              list[dict],
+    path:                 Path,
+    experiment:           str,
+    metric:               str = "val_f1_macro",
+    features_eval_dir_override: Optional[str] = None,
 ) -> None:
     """Serialise *records* as ``shortlist.json`` at *path*.
 
@@ -219,15 +233,18 @@ def write_shortlist(
     """
     candidates = [
         {
-            "rank":          i + 1,
-            "run_id":        r["run_id"],
-            "run_name":      r.get("run_name"),
-            "model":         r.get("model"),
-            "val_accuracy":  r.get("val_accuracy"),
-            "val_f1_macro":  r.get("val_f1_macro"),
-            "model_size_kb": r.get("model_size_kb"),
-            "params":        r.get("params", {}),
-            "artifact_uri":  r.get("artifact_uri"),
+            "rank":              i + 1,
+            "run_id":            r["run_id"],
+            "run_name":          r.get("run_name"),
+            "model":             r.get("model"),
+            "val_accuracy":      r.get("val_accuracy"),
+            "val_f1_macro":      r.get("val_f1_macro"),
+            "model_size_kb":     r.get("model_size_kb"),
+            "params":            r.get("params", {}),
+            "artifact_uri":      r.get("artifact_uri"),
+            "features_dir":      r.get("features_dir"),
+            "features_eval_dir": features_eval_dir_override or r.get("features_eval_dir"),
+            "class_filter":      r.get("class_filter"),
         }
         for i, r in enumerate(records)
     ]
@@ -252,6 +269,7 @@ def select_postopt(
     opt_dir:        Path,
     max_size_kb:    Optional[float] = None,
     metric:         str             = "val_accuracy_optimized",
+    ascending:      bool            = False,
 ) -> Optional[dict]:
     """Read Stage 6 optimisation reports and return the best surviving model.
 
@@ -289,9 +307,14 @@ def select_postopt(
     results = []
     for candidate in shortlist:
         model_name = candidate.get("model", "unknown")
-        report_path = opt_dir / model_name / "optimization_report.json"
+        run_name   = candidate.get("run_name") or model_name
+        # optimize.py writes under run_name when it differs from model_name
+        # (e.g. two CNN variants); fall back to model_name for older outputs.
+        report_path = opt_dir / run_name / "optimization_report.json"
         if not report_path.exists():
-            logger.warning("No optimization_report.json for '%s' — skipping.", model_name)
+            report_path = opt_dir / model_name / "optimization_report.json"
+        if not report_path.exists():
+            logger.warning("No optimization_report.json for '%s' — skipping.", run_name)
             continue
 
         report = json.loads(report_path.read_text())
@@ -317,7 +340,7 @@ def select_postopt(
     if not results:
         return None
 
-    results.sort(key=lambda r: r["_rank_metric"], reverse=True)
+    results.sort(key=lambda r: r["_rank_metric"], reverse=not ascending)
     return results[0]
 
 
@@ -364,15 +387,17 @@ def _print_preopt_table(records: list[dict], metric: str, top_n: int) -> None:
     print()
 
 
-def _print_postopt_table(results: list[dict], metric: str) -> None:
+def _print_postopt_table(results: list[dict], metric: str, ascending: bool = False) -> None:
+    direction = "↑ asc" if ascending else "↓ desc"
+    rank_hdr  = f"{'Rank (' + metric[:10] + ') ' + direction:>22}"
     header = (
         f"{'#':>4}  "
-        f"{'Model':<16}  "
+        f"{'Run name':<32}  "
         f"{'Opt size (KB)':>14}  "
         f"{'Orig size (KB)':>15}  "
         f"{'Acc (opt)':>10}  "
         f"{'Acc drop':>10}  "
-        f"{'Rank (' + metric[:12] + ')':>18}"
+        f"{rank_hdr}"
     )
     sep = "-" * len(header)
     print()
@@ -380,15 +405,16 @@ def _print_postopt_table(results: list[dict], metric: str) -> None:
     print(header)
     print(sep)
     for i, r in enumerate(results, start=1):
-        mark = " *" if i == 1 else "  "
+        mark    = " *" if i == 1 else "  "
+        label   = r.get("run_name") or r.get("model_name", "?")
         print(
             f"{i:>4}{mark}"
-            f"{r.get('model_name', '?'):<16}  "
+            f"{label[:32]:<32}  "
             f"{_fmt_float(r.get('optimized_size_kb'), 14)}  "
             f"{_fmt_float(r.get('original_size_kb'), 15)}  "
             f"{_fmt_float(r.get('val_accuracy_optimized'), 10)}  "
             f"{_fmt_float(r.get('accuracy_drop'), 10)}  "
-            f"{_fmt_float(r.get('_rank_metric'), 18)}"
+            f"{_fmt_float(r.get('_rank_metric'), 22)}"
         )
     print(sep)
     print(f"  * Best post-optimisation model  |  {len(results)} model(s) evaluated.")
@@ -461,6 +487,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--mlflow-uri", metavar="URI",
         help="MLflow tracking URI (default: env MLFLOW_TRACKING_URI or 'mlflow/').",
     )
+    pre.add_argument(
+        "--features-eval-dir", metavar="DIR", dest="features_eval_dir",
+        help=(
+            "Override the features_eval_dir field for every candidate in the "
+            "shortlist.  Useful when the held-out set is in a non-standard "
+            "location.  When omitted, select.py auto-derives the eval dir from "
+            "features_dir by replacing '_train' with '_val' (if that path "
+            "exists), or reads 'features_eval_dir' from the MLflow run params."
+        ),
+    )
 
     # ── Post-opt flags ─────────────────────────────────────────────────────
     post = p.add_argument_group("post-optimisation flags (--post-opt mode)")
@@ -475,6 +511,13 @@ def build_parser() -> argparse.ArgumentParser:
     post.add_argument(
         "--max-size-kb", type=float, metavar="FLOAT",
         help="Hard upper bound on optimized_size_kb (post-opt only).",
+    )
+    post.add_argument(
+        "--sort-asc", action="store_true", default=False,
+        help=(
+            "Sort ascending instead of descending.  Use this when --metric "
+            "is a cost (e.g. latency_ms, onnx_latency_ms) where lower is better."
+        ),
     )
 
     # ── Shared output ──────────────────────────────────────────────────────
@@ -522,6 +565,7 @@ def main(argv: Optional[list[str]] = None) -> None:
             opt_dir        = opt_dir,
             max_size_kb    = args.max_size_kb,
             metric         = args.metric,
+            ascending      = args.sort_asc,
         )
 
         if best is None:
@@ -536,16 +580,20 @@ def main(argv: Optional[list[str]] = None) -> None:
         candidates   = shortlist_data.get("candidates", [])
         display_list = []
         for c in candidates:
-            rp = opt_dir / (c.get("model") or "") / "optimization_report.json"
+            _run  = c.get("run_name") or c.get("model") or ""
+            _mod  = c.get("model") or ""
+            rp = opt_dir / _run / "optimization_report.json"
+            if not rp.exists():
+                rp = opt_dir / _mod / "optimization_report.json"
             if rp.exists():
                 r = json.loads(rp.read_text())
                 rv = r.get(args.metric)
                 if rv is not None:
                     r["_rank_metric"] = float(rv)
                     display_list.append(r)
-        display_list.sort(key=lambda r: r["_rank_metric"], reverse=True)
+        display_list.sort(key=lambda r: r["_rank_metric"], reverse=not args.sort_asc)
 
-        _print_postopt_table(display_list, args.metric)
+        _print_postopt_table(display_list, args.metric, ascending=args.sort_asc)
         _write_best(best, output_path, experiment_name)
 
         opt_size = best.get("optimized_size_kb", 0) or 0
@@ -578,7 +626,10 @@ def main(argv: Optional[list[str]] = None) -> None:
         sys.exit(1)
 
     _print_preopt_table(candidates, args.metric, args.top_n)
-    write_shortlist(candidates, output_path, args.experiment, args.metric)
+    write_shortlist(
+        candidates, output_path, args.experiment, args.metric,
+        features_eval_dir_override=getattr(args, "features_eval_dir", None),
+    )
 
     best = candidates[0]
     print(

@@ -13,6 +13,8 @@ Registered names
 ``knn``            k-Nearest Neighbours classifier
 ``kmeans``         K-Means clustering (unsupervised — ignores labels during fit)
 ``pca_svm``        sklearn Pipeline: StandardScaler → PCA(50) → SVC
+``pca_lda``        sklearn Pipeline: StandardScaler → PCA(50) → LDA
+``pca_knn``        sklearn Pipeline: StandardScaler → PCA(50) → kNN
 
 Input handling
 --------------
@@ -417,6 +419,93 @@ class PCASVMTrainer(SklearnTrainer):
 
     @classmethod
     def load(cls, path: Path) -> "PCASVMTrainer":
+        inst = cls.__new__(cls)
+        inst._estimator = joblib.load(path)
+        inst._fitted    = True
+        return inst
+
+
+# ---- PCA + LDA pipeline ------------------------------------------------
+
+@register_model
+class PCALDATrainer(SklearnTrainer):
+    """Pipeline: StandardScaler → PCA → LDA.
+
+    PCA decorrelates and reduces the feature space before LDA, which
+    benefits from fewer, orthogonal dimensions when computing within/
+    between-class scatter matrices.
+
+    Parameters
+    ----------
+    n_components_pca:   PCA components to keep (default 50).
+    n_components_lda:   LDA components (default *None* → min(n_classes-1, n_pca)).
+    solver:             LDA solver (default ``"svd"``).
+    """
+
+    name       = "pca_lda"
+    model_type = "classical"
+
+    def __init__(
+        self,
+        n_components_pca: int = 50,
+        n_components_lda: Optional[int] = None,
+        solver: str = "svd",
+        **_,
+    ):
+        super().__init__(
+            Pipeline([
+                ("scaler", StandardScaler()),
+                ("pca",    PCA(n_components=n_components_pca)),
+                ("lda",    LinearDiscriminantAnalysis(
+                               n_components=n_components_lda, solver=solver)),
+            ])
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "PCALDATrainer":
+        inst = cls.__new__(cls)
+        inst._estimator = joblib.load(path)
+        inst._fitted    = True
+        return inst
+
+
+# ---- PCA + kNN pipeline ------------------------------------------------
+
+@register_model
+class PCAKNNTrainer(SklearnTrainer):
+    """Pipeline: StandardScaler → PCA → kNN.
+
+    Reduces the feature space before kNN so that Euclidean distances are
+    computed in a lower-dimensional, decorrelated space — mitigating the
+    curse of dimensionality that degrades kNN on raw 300+ dim vectors.
+
+    Parameters
+    ----------
+    n_components:   PCA components to keep (default 50).
+    n_neighbors:    Number of neighbours (default 5).
+    metric:         Distance metric (default ``"minkowski"``).
+    """
+
+    name       = "pca_knn"
+    model_type = "classical"
+
+    def __init__(
+        self,
+        n_components: int = 50,
+        n_neighbors: int = 5,
+        metric: str = "minkowski",
+        **_,
+    ):
+        super().__init__(
+            Pipeline([
+                ("scaler", StandardScaler()),
+                ("pca",    PCA(n_components=n_components)),
+                ("knn",    KNeighborsClassifier(n_neighbors=n_neighbors, metric=metric)),
+            ])
+        )
+
+    @classmethod
+    def load(cls, path: Path) -> "PCAKNNTrainer":
         inst = cls.__new__(cls)
         inst._estimator = joblib.load(path)
         inst._fitted    = True

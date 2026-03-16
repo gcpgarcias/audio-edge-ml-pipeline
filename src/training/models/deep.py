@@ -76,6 +76,14 @@ class KerasTrainer(BaseTrainer):
         self._extra        = kwargs
         self._model        = None
 
+    def _architecture_params(self) -> dict:
+        """Subclass-specific hyperparams to include in MLflow logging.
+
+        Override in each subclass to expose architecture parameters
+        (e.g. hidden_units, filters) that are not in the base KerasTrainer.
+        """
+        return {}
+
     # ------------------------------------------------------------------
     # Subclass hook
     # ------------------------------------------------------------------
@@ -217,6 +225,7 @@ class KerasTrainer(BaseTrainer):
             "dropout":       self.dropout,
             "learning_rate": self.learning_rate,
         }
+        params.update({k: str(v) for k, v in self._architecture_params().items()})
         params.update({k: str(v) for k, v in self._extra.items()})
 
         # Write per-run artefacts via evaluate helpers
@@ -292,6 +301,9 @@ class MLPTrainer(KerasTrainer):
         super().__init__(**kwargs)
         self.hidden_units = hidden_units or [256, 128]
 
+    def _architecture_params(self) -> dict:
+        return {"hidden_units": self.hidden_units}
+
     def _build_model(self, input_shape: tuple, n_classes: int):
         import tensorflow as tf
 
@@ -348,6 +360,9 @@ class CNNTrainer(KerasTrainer):
         if isinstance(filters, int):
             filters = [filters] * (n_blocks or 2)
         self.filters = list(filters)
+
+    def _architecture_params(self) -> dict:
+        return {"filters": self.filters}
 
     def _prepare_input(self, X: np.ndarray) -> np.ndarray:
         if X.ndim == 2:          # (N, D) flat — shouldn't happen but guard
@@ -414,6 +429,9 @@ class RNNTrainer(KerasTrainer):
         self.units    = units
         self.n_layers = n_layers
 
+    def _architecture_params(self) -> dict:
+        return {"units": self.units, "n_layers": self.n_layers}
+
     def _prepare_input(self, X: np.ndarray) -> np.ndarray:
         if X.ndim == 2:          # (N, D) → (N, D, 1)
             return X[:, :, np.newaxis]
@@ -478,6 +496,9 @@ class TransformerTrainer(KerasTrainer):
         self.num_heads = num_heads
         self.ff_dim    = ff_dim
         self.n_blocks  = n_blocks
+
+    def _architecture_params(self) -> dict:
+        return {"num_heads": self.num_heads, "ff_dim": self.ff_dim, "n_blocks": self.n_blocks}
 
     def _prepare_input(self, X: np.ndarray) -> np.ndarray:
         if X.ndim == 2:          # (N, D) → (N, D, 1)

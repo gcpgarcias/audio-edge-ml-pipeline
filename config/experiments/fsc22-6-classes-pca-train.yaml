@@ -10,9 +10,9 @@
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
-features_dir:      data/processed/fsc22_classical_lean_train
+features_dir:      data/processed/fsc22_classical_train
 output_dir:        data/models
-experiment:        fsc22-6-classes-lean-dtree-train
+experiment:        fsc22-6-classes-pca-train
 class_filter:
   - Fire
   - Thunderstorm
@@ -27,7 +27,7 @@ class_filter:
 val_split:         0.2
 
 # Optional held-out test FeatureSet (same feature type as features_dir)
-# features_test_dir: data/processed/fsc22_classical_lean_val
+# features_test_dir: data/processed/fsc22_classical_test
 
 # ── Runs ────────────────────────────────────────────────────────────────────
 
@@ -35,36 +35,41 @@ runs:
 
   # ── Classical models (flat audio_classical features) ──────────────────────
 
-  # - model: svm
-  #   name:  fsc22_6_classes_lean_svm_train
-  #   params:
-  #     C:      0.1
-  #     kernel: linear
-  #     gamma:  scale
-
-  # - model: pca_svm
-  #   name:  fsc22_6_classes_pca_svm_pca_train
-  #   params:
-  #     n_components: 80
-  #     C:            0.1
-  #     kernel:       linear
-  #     gamma:        scale
-
-  # - model: lda
-  #   name:  fsc22_6_classes_lean_lda_train
-
-  # - model: pca_lda
-  #   name:  fsc22_6_classes_lean_lda_pca_train
-  #   params:
-  #     n_components_pca: 80
-  #     n_components_lda: null
-  #     solver: svd
-
-  - model: decision_tree
-    name:  fsc22_6_classes_lean_dtree_train
+  - model: svm
+    name:  fsc22_6_classes_pca_svm_simple_train
     params:
-      max_depth:        10
-      min_samples_leaf: 2
+      C:      1.0
+      kernel: rbf
+      gamma:  scale
+
+  - model: pca_svm
+    name:  fsc22_6_classes_pca_svm_pca_train
+    params:
+      n_components: 50
+      C:            1.0
+      kernel:       rbf
+
+  # - model: svm
+  #   name:  fsc22_6_classes_svm_c10_train_2
+  #   params:
+  #     C:      10.0
+  #     kernel: rbf
+
+  - model: lda
+    name:  fsc22_6_classes_pca_lda_simple_train
+
+  - model: pca_lda
+    name:  fsc22_6_classes_pca_lda_pca_train
+    params:
+      n_components_pca: 50
+      n_components_lda: null
+      solver: svd
+
+  # - model: decision_tree
+  #   name:  fsc22_6_classes_dtree_train_2
+  #   params:
+  #     max_depth:        10
+  #     min_samples_leaf: 2
 
   # - model: random_forest
   #   name:  fsc22_6classes_rf
@@ -72,18 +77,17 @@ runs:
   #     n_estimators: 200
   #     max_depth:    20
 
-  # - model: knn
-  #   name:  fsc22_6_classes_lean_knn_train
-  #   params:
-  #     n_neighbors: 7
-  #     metric:      minkowski
+  - model: knn
+    name:  fsc22_6_classes_pca_knn_simple_train
+    params:
+      n_neighbors: 5
+      metric:      minkowski
 
-  # - model: pca_knn
-  #   name: fsc22_6_classes_lean_knn_pca_train
-  #   params:
-  #     n_components: 80
-  #     n_neighbors: 7
-  #     metric:      minkowski
+  - model: pca_knn
+    name: fsc22_6_classes_pca_knn_pca_train
+    params:
+      n_components: 50
+      n_neighbors: 5
 
   # - model: kmeans
   #   name:  fsc22_6_classes_kmeans
@@ -96,15 +100,13 @@ runs:
   #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
 
   # - model: mlp
-  #   name:  fsc22_6_classes_lean_mlp_train
-  #   features_dir: data/processed/fsc22_classical_lean_train
-  #   features_test: data/processed/fsc22_classical_lean_val
+  #   name:  fsc22_6_classes_mlp_train_2
+  #   features_dir: data/processed/fsc22_classical_train
   #   params:
   #     hidden_units: [256, 128]
-  #     dropout:      0.1
-  #     epochs:       100
-  #     batch_size:   16
-  #     learning_rate: 0.003
+  #     dropout:      0.4
+  #     epochs:       50
+  #     batch_size:   32
 
   # - model: cnn
   #   name:  fsc22_6_classes_cnn_melspec_train_2
