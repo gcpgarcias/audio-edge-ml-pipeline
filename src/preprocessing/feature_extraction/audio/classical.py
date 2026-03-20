@@ -7,34 +7,39 @@ classifiers and clustering algorithms:
 
     SVM · LDA · PCA · Decision Tree · Random Forest · K-NN · K-Means
 
-Feature groups (each aggregated as mean + standard deviation over time)
+Feature groups (aggregated over time according to ``aggregations``)
 -----------------------------------------------------------------------
-Group               Key                 Dimension   Description
-------------------- ------------------- ----------- ----------------------------------------
-MFCCs               mfcc                2 × n_mfcc  Mel-frequency cepstral coefficients
-Delta MFCCs         delta_mfcc          2 × n_mfcc  First-order MFCC derivatives
-Delta-delta MFCCs   delta2_mfcc         2 × n_mfcc  Second-order MFCC derivatives
-Spectral centroid   spectral_centroid   2           Weighted mean frequency
-Spectral rolloff    spectral_rolloff    2           Frequency below which 85 % of energy lies
-Spectral bandwidth  spectral_bandwidth  2           Spread of energy around the centroid
-Spectral contrast   spectral_contrast   2 × 7       Peak-valley contrast per sub-band
-Spectral flatness   spectral_flatness   2           Tonality vs. noise measure
-Chroma STFT         chroma              2 × 12      Energy per pitch class (C … B)
-Zero-crossing rate  zcr                 2           Rate of sign changes in the waveform
-RMS energy          rms                 2           Root-mean-square amplitude
-Tonnetz             tonnetz             2 × 6       Tonal centroid (fifths, minor/major thirds)
-------------------- ------------------- ----------- ----------------------------------------
+Group               Key                 Raw dim   Description
+------------------- ------------------- --------- ----------------------------------------
+MFCCs               mfcc                n_mfcc    Mel-frequency cepstral coefficients
+Delta MFCCs         delta_mfcc          n_mfcc    First-order MFCC derivatives
+Delta-delta MFCCs   delta2_mfcc         n_mfcc    Second-order MFCC derivatives
+Spectral centroid   spectral_centroid   1         Weighted mean frequency
+Spectral rolloff    spectral_rolloff    1         Frequency below which 85 % of energy lies
+Spectral bandwidth  spectral_bandwidth  1         Spread of energy around the centroid
+Spectral contrast   spectral_contrast   7         Peak-valley contrast per sub-band
+Spectral flatness   spectral_flatness   1         Tonality vs. noise measure
+Chroma STFT         chroma              12        Energy per pitch class (C … B)
+Zero-crossing rate  zcr                 1         Rate of sign changes in the waveform
+RMS energy          rms                 1         Root-mean-square amplitude
+Tonnetz             tonnetz             6         Tonal centroid (fifths, minor/major thirds)
+------------------- ------------------- --------- ----------------------------------------
 
-Default total with n_mfcc=40 (all groups):
-    3×(2×40) + 2+2+2+(2×7)+2+(2×12)+2+2+(2×6) = 302 features
+Each group contributes  raw_dim × len(aggregations)  values to the vector.
 
-Selecting a subset via the ``features`` parameter drops the unwanted groups
-and recomputes the dimension accordingly.  Example lean vector (no delta
-MFCCs, no Tonnetz):
+Default (aggregations=["mean","std"], n_mfcc=40, all groups):
+    3×(2×40) + (2×1)×6 + (2×7) + (2×12) + (2×6) = 302 features
 
+Mean-only (aggregations=["mean"], n_mfcc=40, all groups):
+    3×40 + 6 + 7 + 12 + 6 = 151 features
+
+Lean vector (no delta MFCCs, no Tonnetz, default aggregations):
     features: [mfcc, spectral_centroid, spectral_rolloff, spectral_bandwidth,
                spectral_contrast, spectral_flatness, chroma, zcr, rms]
     → 2×40 + 2+2+2+14+2+24+2+2 = 130 features
+
+Lean + mean-only:
+    → 40 + 1+1+1+7+1+12+1+1 = 65 features
 """
 
 from __future__ import annotations
@@ -68,28 +73,22 @@ _ALL_FEATURES: list[str] = [
     "tonnetz",
 ]
 
-# Fixed dimension of each group (independent of n_mfcc where applicable).
-_FIXED_DIMS: dict[str, int] = {
-    "spectral_centroid": 2,
-    "spectral_rolloff":  2,
-    "spectral_bandwidth": 2,
-    "spectral_contrast": 14,  # 2 × 7 sub-bands
-    "spectral_flatness": 2,
-    "chroma":            24,  # 2 × 12 pitch classes
-    "zcr":               2,
-    "rms":               2,
-    "tonnetz":           12,  # 2 × 6
+# Raw dimension of each group *before* aggregation (independent of n_mfcc).
+# MFCC-family groups are handled separately as they depend on n_mfcc.
+_RAW_DIMS: dict[str, int] = {
+    "spectral_centroid":  1,
+    "spectral_rolloff":   1,
+    "spectral_bandwidth": 1,
+    "spectral_contrast":  7,
+    "spectral_flatness":  1,
+    "chroma":             12,
+    "zcr":                1,
+    "rms":                1,
+    "tonnetz":            6,
 }
 
-
-def _mean_std(x: np.ndarray) -> np.ndarray:
-    """Concatenate column-wise mean and std of a 2-D array → 1-D vector."""
-    return np.concatenate([x.mean(axis=1), x.std(axis=1)])
-
-
-def _scalar_mean_std(x: np.ndarray) -> np.ndarray:
-    """Concatenate mean and std of a 1- or 2-D array → [mean, std]."""
-    return np.array([float(x.mean()), float(x.std())])
+# Valid temporal aggregation functions.
+_ALL_AGGREGATIONS: list[str] = ["mean", "std"]
 
 
 @register
@@ -117,6 +116,13 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
             spectral_centroid  spectral_rolloff  spectral_bandwidth
             spectral_contrast  spectral_flatness
             chroma  zcr  rms  tonnetz
+
+    aggregations:
+        Temporal aggregation functions applied to each feature group.
+        Defaults to ``["mean", "std"]``.  Valid values: ``"mean"``, ``"std"``.
+        Use ``["mean"]`` to halve the feature vector (drops temporal-dynamics
+        signal; useful for ablation or edge devices with tight memory budgets).
+        Order is preserved: ``["mean", "std"]`` always places mean before std.
     """
 
     name         = "audio_classical"
@@ -125,12 +131,13 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
 
     def __init__(
         self,
-        sample_rate:  int   = 22050,
-        n_mfcc:       int   = 40,
-        n_fft:        int   = 1024,
-        hop_length:   int   = 512,
-        min_duration: float = _MIN_DURATION,
-        features:     Optional[list[str]] = None,
+        sample_rate:   int              = 22050,
+        n_mfcc:        int              = 40,
+        n_fft:         int              = 1024,
+        hop_length:    int              = 512,
+        min_duration:  float            = _MIN_DURATION,
+        features:      Optional[list[str]] = None,
+        aggregations:  Optional[list[str]] = None,
     ) -> None:
         self.sample_rate  = sample_rate
         self.n_mfcc       = n_mfcc
@@ -149,6 +156,22 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
                 )
             # Preserve canonical ordering regardless of input order.
             self.features = [k for k in _ALL_FEATURES if k in set(features)]
+
+        if aggregations is None:
+            self.aggregations = list(_ALL_AGGREGATIONS)
+        else:
+            unknown = set(aggregations) - set(_ALL_AGGREGATIONS)
+            if unknown:
+                raise ValueError(
+                    f"Unknown aggregation(s): {sorted(unknown)}. "
+                    f"Valid values: {_ALL_AGGREGATIONS}"
+                )
+            if not aggregations:
+                raise ValueError("aggregations must contain at least one value.")
+            # Preserve canonical ordering.
+            self.aggregations = [a for a in _ALL_AGGREGATIONS if a in set(aggregations)]
+
+        self._agg_set = set(self.aggregations)
 
     # ------------------------------------------------------------------
     # Public interface
@@ -173,19 +196,44 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
 
     @property
     def feature_dim(self) -> int:
-        """Total number of features for the current ``features`` selection."""
-        mfcc_dim = 2 * self.n_mfcc
+        """Total number of features for the current configuration."""
+        n_agg = len(self.aggregations)
         total = 0
         for key in self.features:
             if key in ("mfcc", "delta_mfcc", "delta2_mfcc"):
-                total += mfcc_dim
+                total += n_agg * self.n_mfcc
             else:
-                total += _FIXED_DIMS[key]
+                total += n_agg * _RAW_DIMS[key]
         return total
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _agg(self, x: np.ndarray, *, scalar: bool = False) -> np.ndarray:
+        """Aggregate a frame-level array according to ``self.aggregations``.
+
+        Parameters
+        ----------
+        x:
+            2-D array of shape ``(n_features, n_frames)``.
+        scalar:
+            If ``True``, the array has a single feature row (or is 1-D) and
+            the result is a flat vector of length ``len(aggregations)``.
+            If ``False``, mean/std are computed along the time axis and
+            concatenated, giving a vector of length
+            ``n_features × len(aggregations)``.
+        """
+        parts = []
+        if "mean" in self._agg_set:
+            parts.append(
+                np.array([float(x.mean())]) if scalar else x.mean(axis=1)
+            )
+        if "std" in self._agg_set:
+            parts.append(
+                np.array([float(x.std())]) if scalar else x.std(axis=1)
+            )
+        return np.concatenate(parts)
 
     def _load_segment(
         self,
@@ -287,18 +335,18 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
 
         # ---- Aggregate in canonical order ----
         _aggregators = {
-            "mfcc":               lambda: _mean_std(mfcc),
-            "delta_mfcc":         lambda: _mean_std(d_mfcc),
-            "delta2_mfcc":        lambda: _mean_std(dd_mfcc),
-            "spectral_centroid":  lambda: _scalar_mean_std(spec_centroid),
-            "spectral_rolloff":   lambda: _scalar_mean_std(spec_rolloff),
-            "spectral_bandwidth": lambda: _scalar_mean_std(spec_bandwidth),
-            "spectral_contrast":  lambda: _mean_std(spec_contrast),
-            "spectral_flatness":  lambda: _scalar_mean_std(spec_flatness),
-            "chroma":             lambda: _mean_std(chroma),
-            "zcr":                lambda: _scalar_mean_std(zcr),
-            "rms":                lambda: _scalar_mean_std(rms),
-            "tonnetz":            lambda: _mean_std(tonnetz),
+            "mfcc":               lambda: self._agg(mfcc),
+            "delta_mfcc":         lambda: self._agg(d_mfcc),
+            "delta2_mfcc":        lambda: self._agg(dd_mfcc),
+            "spectral_centroid":  lambda: self._agg(spec_centroid,  scalar=True),
+            "spectral_rolloff":   lambda: self._agg(spec_rolloff,   scalar=True),
+            "spectral_bandwidth": lambda: self._agg(spec_bandwidth, scalar=True),
+            "spectral_contrast":  lambda: self._agg(spec_contrast),
+            "spectral_flatness":  lambda: self._agg(spec_flatness,  scalar=True),
+            "chroma":             lambda: self._agg(chroma),
+            "zcr":                lambda: self._agg(zcr,            scalar=True),
+            "rms":                lambda: self._agg(rms,            scalar=True),
+            "tonnetz":            lambda: self._agg(tonnetz),
         }
 
         parts = [_aggregators[key]() for key in self.features]

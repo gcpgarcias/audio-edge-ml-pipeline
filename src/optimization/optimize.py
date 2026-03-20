@@ -170,6 +170,12 @@ def _optimize_one(
         model_name, fp32_metrics["accuracy"], fp32_metrics["latency_ms"],
         fp32_path.stat().st_size / 1024,
     )
+    # Re-evaluate the original model on X_eval via the fp32 ONNX (same weights,
+    # negligible FP32 arithmetic difference).  This replaces the training-time
+    # val_accuracy stored in the shortlist, which was measured on a different
+    # (smaller) split and cannot be fairly compared to the optimized metrics.
+    val_acc_orig_train = val_acc_orig   # keep the training-time value for reference
+    val_acc_orig       = fp32_metrics["accuracy"]
 
     # ── 3. Optimization modes ─────────────────────────────────────────────
     modes: dict[str, dict] = {
@@ -316,8 +322,9 @@ def _optimize_one(
         "run_name":               run_name,
         "model_name":             model_name,
         "original_model_path":    str(model_path),
-        "original_size_kb":       original_size_kb,
-        "val_accuracy_original":  val_acc_orig,
+        "original_size_kb":            original_size_kb,
+        "val_accuracy_original_train": val_acc_orig_train,  # training-time metric (different split)
+        "val_accuracy_original":       val_acc_orig,        # original model on eval set via fp32 ONNX
         # ── ONNX results (used by Stage 5c) ──────────────────────────────
         "benchmark_results":      onnx_benchmark_results,
         "optimized_model_path":   str(best["path"]),
@@ -354,8 +361,9 @@ def _optimize_one(
                 "max_accuracy_drop_threshold": max_accuracy_drop,
             })
             # Original model
-            mlflow_module.log_metric("original_size_kb",     original_size_kb)
-            mlflow_module.log_metric("val_accuracy_original", val_acc_orig)
+            mlflow_module.log_metric("original_size_kb",            original_size_kb)
+            mlflow_module.log_metric("val_accuracy_original",       val_acc_orig)        # on eval set
+            mlflow_module.log_metric("val_accuracy_original_train", val_acc_orig_train)  # training-time
 
             # All ONNX modes
             for mode_key, mv in modes.items():

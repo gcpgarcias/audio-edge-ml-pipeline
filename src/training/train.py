@@ -173,6 +173,71 @@ def _run_one(
         trainer_cls = get_model(run.model)
         trainer = trainer_cls(**run.params)
 
+        # ── 5a. Optional cross-validation (measurement only) ──────────────
+        if run.cv_folds > 0:
+            import tempfile
+            from sklearn.model_selection import StratifiedKFold
+
+            min_class_n  = int(np.bincount(y).min())
+            actual_folds = min(run.cv_folds, min_class_n)
+            if actual_folds < run.cv_folds:
+                logger.warning(
+                    "[%s] cv_folds=%d reduced to %d — smallest class has only %d samples.",
+                    run.name, run.cv_folds, actual_folds, min_class_n,
+                )
+
+            logger.info("[%s] Cross-validation: %d folds ...", run.name, actual_folds)
+            mlflow_module.log_param("cv_folds", actual_folds)
+            mlflow_module.log_param("cv_random_state", run.cv_random_state)
+
+            skf = StratifiedKFold(
+                n_splits=actual_folds, shuffle=True, random_state=run.cv_random_state
+            )
+            fold_metrics: list[dict] = []
+
+            with tempfile.TemporaryDirectory(prefix="cv_fold_") as _tmp:
+                for fold_i, (tr_idx, vl_idx) in enumerate(skf.split(X, y), 1):
+                    fold_trainer = trainer_cls(**run.params)
+                    fold_trainer.fit(
+                        X_train     = X[tr_idx],
+                        y_train     = y[tr_idx],
+                        X_val       = X[vl_idx],
+                        y_val       = y[vl_idx],
+                        label_names = label_names,
+                        run_name    = f"{run_name}_cv{fold_i}",
+                        output_dir  = Path(_tmp) / f"fold_{fold_i}",
+                        mlflow_run  = None,
+                    )
+                    y_pred_fold  = fold_trainer.predict(X[vl_idx])
+                    y_proba_fold = fold_trainer.predict_proba(X[vl_idx])
+                    m = ev.compute_metrics(y[vl_idx], y_pred_fold, y_proba_fold, label_names)
+                    fold_metrics.append(m)
+                    logger.info(
+                        "[%s] CV fold %d/%d — accuracy=%.4f  f1=%.4f",
+                        run.name, fold_i, actual_folds,
+                        m.get("val_accuracy", float("nan")),
+                        m.get("val_f1_macro", float("nan")),
+                    )
+
+            # Aggregate scalar metrics across folds and log to MLflow
+            scalar_keys = [
+                k for k in fold_metrics[0]
+                if isinstance(fold_metrics[0][k], (int, float))
+            ]
+            for k in scalar_keys:
+                vals = [m[k] for m in fold_metrics]
+                mlflow_module.log_metric(f"cv_{k}_mean", float(np.mean(vals)))
+                mlflow_module.log_metric(f"cv_{k}_std",  float(np.std(vals)))
+
+            logger.info(
+                "[%s] CV complete (%d folds) — accuracy=%.4f±%.4f  f1=%.4f±%.4f",
+                run.name, actual_folds,
+                np.mean([m.get("val_accuracy", float("nan")) for m in fold_metrics]),
+                np.std( [m.get("val_accuracy", float("nan")) for m in fold_metrics]),
+                np.mean([m.get("val_f1_macro", float("nan")) for m in fold_metrics]),
+                np.std( [m.get("val_f1_macro", float("nan")) for m in fold_metrics]),
+            )
+
         result = trainer.fit(
             X_train=X_train,
             y_train=y_train,

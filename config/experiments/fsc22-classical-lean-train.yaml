@@ -28,15 +28,12 @@ experiments:
   #   loader:    fsc22
   #   split:     validation
 
-  - name:      fsc22_classical_mean_train
+  - name:      fsc22_classical_lean_train
     extractor: audio_classical
     loader:    fsc22
     split:     train
     extractor_params:
       n_mfcc: 40
-      aggregations:
-        - mean
-        # - std
       features:
         - mfcc
         - spectral_centroid

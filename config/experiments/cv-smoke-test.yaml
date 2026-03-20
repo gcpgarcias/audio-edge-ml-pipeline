@@ -1,0 +1,8 @@
+auto_select: false
+cv_folds: 3
+experiment: cv-smoke-test
+features_dir: data/processed/fsc22_classical_lean_train
+output_dir: data/models/cv_smoke
+runs:
+- model: lda
+  name: lda_cv3

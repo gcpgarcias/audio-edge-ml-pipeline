@@ -7,9 +7,9 @@ Keep it concise (< 200 lines); link to topic files in `.claude/` for details.
 
 ## Project Overview
 
-A **10-stage ML pipeline** for deploying event-classification models on embedded
-devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
-(36 bird species, WAV + PNG pairs, YOLOv8 bbox annotations, pre-split CSVs). The pipeline is capable of ingesting and preprocessing audio, image, text, tabular (numeric) and video datasets.
+A **multi-stage ML pipeline** for deploying event-classification models on embedded
+devices (Arduino Nicla Vision). Primary dataset: **fsc22**
+(27 classes, 75 WAV files per class). The pipeline is capable of ingesting and preprocessing audio, image, text, tabular (numeric) and video datasets.
 
 ### Pipeline Stages
 
@@ -18,16 +18,16 @@ devices (Arduino Nicla Vision). Primary dataset: **BIRDeep_AudioAnnotations**
 | 1 | Data ingestion | Python / FastAPI (`src/ingestion/api.py`) | Done |
 | 2 | Data transformation | Python (`src/preprocessing/`) | **Done** |
 | 3 | Model training | sklearn + Keras (`src/training/`) | **Done** |
-| 4 | Model evaluation | MLflow local file store (`mlruns/`) | **Done** |
-| 5a | Model selection (pre-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |
-| 6a | Model fine-tuning | sklearn GridSearchCV (`src/training/tune.py`) | **Done** |
-| 5b | Model selection (post-tuning) | MLflow + CLI (`src/training/select.py`) | **Done** |
-| 6b | Resource optimization | ONNX + onnxruntime (`src/optimization/`) | **Done** |
-| 5c | Model selection (post-opt) | MLflow + CLI (`src/training/select.py`) | **Done** |
-| 7 | Model compilation | Apache TVM | TODO |
-| 8 | Model deployment | PlatformIO (`src/deployment/edge_simulator.py`) | TODO |
-| 9 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | TODO |
-| 10 | Model updating | — | TODO |
+| 4 | Model fine-tuning | sklearn GridSearchCV + Optuna Random Search (`src/training/tune.py`) | **Done** |
+| 5 | Resource optimization | ONNX + onnxruntime (`src/optimization/`) | **Done** |
+| 6 | Model compilation | Apache TVM | TODO |
+| 7 | Model deployment | PlatformIO (`src/deployment/edge_simulator.py`) | TODO |
+| 8 | Model monitoring | Streamlit (`src/monitoring/dashboard.py`) | TODO |
+| 9 | Model updating | — | TODO |
+
+| # | Helper | Language / Tool | Status |
+| 1 | Model evaluation | MLflow local file store (`mlruns/`) | **Done** |
+| 2 | Model selection | MLflow + CLI (`src/training/select.py`) | **Done** |
 
 ---
 
@@ -113,15 +113,15 @@ src/preprocessing/
 config/
 ├── feature_extraction.yaml            # Stage 2 — multi-run feature extraction
 ├── training.yaml                      # Stage 3 — multi-model training sweep
-└── tuning.yaml                        # Stage 6a — unified search (classical grid + deep random)
+└── tuning.yaml                        # Stage 4 — unified search (classical grid + deep random)
 
 src/training/
 ├── dataset.py                         # Legacy shim for old spectrogram format (keep)
 ├── config.py                          # TrainConfig / ModelRunConfig + load_train_config()
 ├── evaluate.py                        # compute_metrics(), save_confusion_matrix_png(), log_run_to_mlflow()
 ├── train.py                           # Stage 3 entry point (flag-based + --config sweep)
-├── tune.py                            # Stage 6a — GridSearchCV (classical) + random search (deep)
-├── select.py                          # Stage 5 CLI — filter & rank MLflow runs
+├── tune.py                            # Stage 4 — GridSearchCV (classical) + random search (deep)
+├── select.py                          # Helper 2 CLI — filter & rank MLflow runs
 └── models/
     ├── __init__.py                    # @register_model, get_model(), list_models() + imports
     ├── base.py                        # BaseTrainer (ABC), TrainResult (dataclass)
@@ -168,9 +168,9 @@ info.json             {feature_type, modality, n_samples, feature_shape, …}
 ```bash
 # Single run — flags
 python -m src.preprocessing.pipeline \
-    --loader birdeep --dataset data/raw/BIRDeep_AudioAnnotations \
+    --loader fsc22 --dataset data/raw/fsc22 \
     --split train --extractor audio_classical \
-    --output data/processed/birdeep_classical
+    --output data/processed/fsc22_classical
 
 # Generic audio dataset (class-per-subfolder layout)
 python -m src.preprocessing.pipeline \
@@ -190,7 +190,7 @@ python -m src.preprocessing.pipeline --config config/feature_extraction.yaml
 
 ---
 
-## Stage 3–5 — Training, Evaluation, Selection
+## Stage 3 — Training, Evaluation, Selection
 
 ### Registered Trainers (11 total)
 
@@ -209,7 +209,7 @@ Deep:       mlp  cnn  rnn  transformer
 4. Implement `fit()`, `predict()`, `save()`, `load()`.
 5. Import the class in `src/training/models/__init__.py`.
 
-### Stage 3/4 artefacts layout (`data/models/<run_name>/`)
+### Stage 3-5 artefacts layout (`data/models/<run_name>/`)
 
 ```text
 <model>.joblib | model.keras   serialised model file
@@ -224,29 +224,29 @@ when the sweep contains more than one model:
 ```text
 data/models/shortlist.json                        convenience alias — overwritten by any new sweep
 data/models/shortlist_<experiment>.json           stable, experiment-scoped — use this downstream
-data/models/tuned/shortlist_<experiment>.json     written by Stage 6a (tune.py)
+data/models/tuned/shortlist_<experiment>.json     written by Stage 4 (tune.py)
 ```
 
 Always pass the scoped filename to downstream CLIs:
 
 ```bash
---shortlist data/models/shortlist_birdeep-classification.json
+--shortlist data/models/shortlist_fsc22-classification.json
 ```
 
-### Stage 3/4 CLI
+### Stage 3 CLI
 
 ```bash
 # Single model run
 python -m src.training.train \
-    --features data/processed/birdeep_classical_train \
-    --model svm --output data/models/birdeep_svm \
-    --features-test data/processed/birdeep_classical_test \
-    --experiment birdeep-classification \
+    --features data/processed/fsc22_classical_train \
+    --model svm --output data/models/fsc22_svm \
+    --features-test data/processed/fsc22_classical_test \
+    --experiment fsc22-classification \
     --param C=10.0 --param kernel=rbf
 
 # Smoke test (subsample)
 python -m src.training.train \
-    --features data/processed/birdeep_classical_train \
+    --features data/processed/fsc22_classical_train \
     --model svm --output data/models/smoke \
     --max-samples 200
 
@@ -254,21 +254,21 @@ python -m src.training.train \
 python -m src.training.train --config config/training.yaml
 
 # Local MLflow UI
-mlflow ui --backend-store-uri mlflow/
+mlflow ui --backend-store-uri mlruns/
 ```
 
-### Stage 5 — Two-checkpoint selection
+### Helper 2 — Two-checkpoint selection
 
 **Checkpoint 1 (pre-opt)** runs automatically at the end of every training sweep
-and writes `shortlist.json`.  No size filter — sizes change after Stage 6.
+and writes `shortlist.json`.  No size filter — sizes change after Stage 5.
 
-**Checkpoint 2 (post-opt)** runs manually after Stage 6 and applies the real
+**Checkpoint 2 (post-opt)** runs manually after Stage 5 and applies the real
 `--max-size-kb` constraint against actual compressed sizes.
 
 ```bash
 # Pre-opt: re-rank manually with a different metric
 python -m src.training.select \
-    --experiment birdeep-classification \
+    --experiment fsc22-classification \
     --min-accuracy 0.70 --metric val_f1_macro --top-n 5 \
     --output data/models/shortlist.json
 
@@ -285,7 +285,7 @@ python -m src.training.select \
 export MLFLOW_TRACKING_URI=http://localhost:5000
 ```
 
-**Stage 6 contract** — each optimised model must write:
+**Stage 5 contract** — each optimised model must write:
 `data/models/optimized/<experiment>/<model_name>/optimization_report.json`
 with fields: `optimized_size_kb`, `val_accuracy_optimized`, `accuracy_drop`,
 `quantization_method`, `latency_ms`, etc.  See `select.py` module docstring for
@@ -295,14 +295,7 @@ the full schema.
 
 ## Pending Work
 
-### Stage 10 — Model updating
 
-Not yet designed. Will need a feedback loop from the monitoring dashboard
-back to the training stage.
-
-### Stage 6 — Model optimization
-
-Use LiteRT or TensorFlow Lite to produce optimized model files, evalute and select them in connection with stages 4 & 5.
 
 ---
 
@@ -322,7 +315,7 @@ Use LiteRT or TensorFlow Lite to produce optimized model files, evalute and sele
 | openpyxl | Excel support for TabularLoader |
 | h5py | HDF5 support for TabularLoader |
 | PyYAML | YAML config parsing (`config.py`) |
-| mlflow | Experiment tracking (Stage 4) |
+| mlflow | Experiment tracking (Helper 1) |
 
 ---
 

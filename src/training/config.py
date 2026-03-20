@@ -20,6 +20,8 @@ Schema
     mlflow_uri:        null          # null → env var MLFLOW_TRACKING_URI or "mlflow/"
     val_split:         0.2
     features_test_dir: null          # optional held-out test FeatureSet
+    cv_folds:          0             # 0 = disabled; k>0 runs k-fold CV before final training
+    cv_random_state:   42
 
     runs:
       - model:             svm
@@ -28,6 +30,7 @@ Schema
         features_test_dir: ...               # overrides top-level
         output_dir:        ...               # overrides top-level
         val_split:         0.15              # overrides top-level
+        cv_folds:          5                 # overrides top-level
         params:
           C: 10.0
           kernel: rbf
@@ -83,6 +86,8 @@ class ModelRunConfig:
     features_test_dir: Optional[str]  = None
     output_dir:        Optional[str]  = None
     val_split:         float          = 0.2
+    cv_folds:          int            = 0   # 0 = disabled; k>0 → k-fold CV before final training
+    cv_random_state:   int            = 42  # seed for StratifiedKFold shuffle
     params:            dict           = field(default_factory=dict)
     class_filter:      Optional[list[str]] = None
 
@@ -116,6 +121,8 @@ class TrainConfig:
     mlflow_uri:               Optional[str]        = None
     val_split:                float                = 0.2
     features_test_dir:        Optional[str]        = None
+    cv_folds:                 int                  = 0
+    cv_random_state:          int                  = 42
     class_filter:             Optional[list[str]]  = None
     runs:                     list[ModelRunConfig] = field(default_factory=list)
     # Auto-selection written to <output_dir>/shortlist.json at end of sweep
@@ -139,6 +146,10 @@ class TrainConfig:
                     output_dir        = run.output_dir        or self.output_dir,
                     val_split         = run.val_split         if run.val_split != 0.2
                                         else self.val_split,
+                    cv_folds          = run.cv_folds          if run.cv_folds != 0
+                                        else self.cv_folds,
+                    cv_random_state   = run.cv_random_state   if run.cv_random_state != 42
+                                        else self.cv_random_state,
                     params            = run.params,
                     class_filter      = run.class_filter if run.class_filter is not None
                                         else self.class_filter,
@@ -181,6 +192,8 @@ def load_train_config(path: Path) -> TrainConfig:
     mlflow_uri               = raw.get("mlflow_uri", None)
     val_split                = float(raw.get("val_split", 0.2))
     features_test_dir        = raw.get("features_test_dir", None)
+    cv_folds                 = int(raw.get("cv_folds", 0))
+    cv_random_state          = int(raw.get("cv_random_state", 42))
     # Accept both class_filter and species_filter (legacy alias)
     class_filter             = raw.get("class_filter") or raw.get("species_filter") or None
     auto_select              = bool(raw.get("auto_select", True))
@@ -209,6 +222,8 @@ def load_train_config(path: Path) -> TrainConfig:
                 features_test_dir = item.get("features_test_dir"),
                 output_dir        = item.get("output_dir"),
                 val_split         = float(item.get("val_split", 0.2)),
+                cv_folds          = int(item.get("cv_folds", 0)),
+                cv_random_state   = int(item.get("cv_random_state", 42)),
                 params            = item.get("params") or {},
                 class_filter      = item.get("class_filter") or item.get("species_filter") or None,
             )
@@ -221,6 +236,8 @@ def load_train_config(path: Path) -> TrainConfig:
         mlflow_uri               = mlflow_uri,
         val_split                = val_split,
         features_test_dir        = features_test_dir,
+        cv_folds                 = cv_folds,
+        cv_random_state          = cv_random_state,
         class_filter             = class_filter,
         runs                     = runs,
         auto_select              = auto_select,
