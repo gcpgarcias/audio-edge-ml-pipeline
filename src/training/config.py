@@ -45,7 +45,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 import yaml
 
@@ -86,7 +86,7 @@ class ModelRunConfig:
     features_test_dir: Optional[str]  = None
     output_dir:        Optional[str]  = None
     val_split:         float          = 0.2
-    cv_folds:          int            = 0   # 0 = disabled; k>0 → k-fold CV before final training
+    cv_folds:          Optional[Union[int, list[int]]] = None  # None = inherit; 0 = disabled; k>0 → CV
     cv_random_state:   int            = 42  # seed for StratifiedKFold shuffle
     params:            dict           = field(default_factory=dict)
     class_filter:      Optional[list[str]] = None
@@ -121,7 +121,7 @@ class TrainConfig:
     mlflow_uri:               Optional[str]        = None
     val_split:                float                = 0.2
     features_test_dir:        Optional[str]        = None
-    cv_folds:                 int                  = 0
+    cv_folds:                 Union[int, list[int]] = 0
     cv_random_state:          int                  = 42
     class_filter:             Optional[list[str]]  = None
     runs:                     list[ModelRunConfig] = field(default_factory=list)
@@ -137,24 +137,38 @@ class TrainConfig:
         """
         resolved = []
         for run in self.runs:
-            resolved.append(
-                ModelRunConfig(
-                    model             = run.model,
-                    name              = run.name or run.model,
-                    features_dir      = run.features_dir      or self.features_dir,
-                    features_test_dir = run.features_test_dir or self.features_test_dir,
-                    output_dir        = run.output_dir        or self.output_dir,
-                    val_split         = run.val_split         if run.val_split != 0.2
-                                        else self.val_split,
-                    cv_folds          = run.cv_folds          if run.cv_folds != 0
-                                        else self.cv_folds,
-                    cv_random_state   = run.cv_random_state   if run.cv_random_state != 42
-                                        else self.cv_random_state,
-                    params            = run.params,
-                    class_filter      = run.class_filter if run.class_filter is not None
-                                        else self.class_filter,
-                )
+            base_name       = run.name or run.model
+            effective_folds = run.cv_folds if run.cv_folds is not None else self.cv_folds
+            fold_list       = (
+                effective_folds if isinstance(effective_folds, list)
+                else [effective_folds]
             )
+
+            for k in fold_list:
+                # Append _cvK suffix only when more than one k value is requested
+                # and CV is actually enabled (k > 0).
+                name = (
+                    f"{base_name}_cv{k}"
+                    if len(fold_list) > 1 and k > 0
+                    else base_name
+                )
+                resolved.append(
+                    ModelRunConfig(
+                        model             = run.model,
+                        name              = name,
+                        features_dir      = run.features_dir      or self.features_dir,
+                        features_test_dir = run.features_test_dir or self.features_test_dir,
+                        output_dir        = run.output_dir        or self.output_dir,
+                        val_split         = run.val_split         if run.val_split != 0.2
+                                            else self.val_split,
+                        cv_folds          = k,
+                        cv_random_state   = run.cv_random_state   if run.cv_random_state != 42
+                                            else self.cv_random_state,
+                        params            = run.params,
+                        class_filter      = run.class_filter if run.class_filter is not None
+                                            else self.class_filter,
+                    )
+                )
         return resolved
 
 
@@ -192,8 +206,9 @@ def load_train_config(path: Path) -> TrainConfig:
     mlflow_uri               = raw.get("mlflow_uri", None)
     val_split                = float(raw.get("val_split", 0.2))
     features_test_dir        = raw.get("features_test_dir", None)
-    cv_folds                 = int(raw.get("cv_folds", 0))
-    cv_random_state          = int(raw.get("cv_random_state", 42))
+    _cv = raw.get("cv_folds", 0)
+    cv_folds        = [int(k) for k in _cv] if isinstance(_cv, list) else int(_cv)
+    cv_random_state = int(raw.get("cv_random_state", 42))
     # Accept both class_filter and species_filter (legacy alias)
     class_filter             = raw.get("class_filter") or raw.get("species_filter") or None
     auto_select              = bool(raw.get("auto_select", True))
@@ -222,7 +237,9 @@ def load_train_config(path: Path) -> TrainConfig:
                 features_test_dir = item.get("features_test_dir"),
                 output_dir        = item.get("output_dir"),
                 val_split         = float(item.get("val_split", 0.2)),
-                cv_folds          = int(item.get("cv_folds", 0)),
+                cv_folds          = ([int(k) for k in item["cv_folds"]]
+                                     if isinstance(item.get("cv_folds"), list)
+                                     else (int(item["cv_folds"]) if "cv_folds" in item else None)),
                 cv_random_state   = int(item.get("cv_random_state", 42)),
                 params            = item.get("params") or {},
                 class_filter      = item.get("class_filter") or item.get("species_filter") or None,

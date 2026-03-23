@@ -10,26 +10,18 @@
 
 # ── Defaults ────────────────────────────────────────────────────────────────
 
-features_dir:      data/processed/fsc22_classical_augmented_train
+features_dir:      data/processed/fsc22_classical_mini_train
 output_dir:        data/models
-experiment:        fsc22-12-classes-train
+experiment:        fsc22-animals-lean-train
 class_filter:
-  - Fire
-  - Thunderstorm
-  - WaterDrops
-  - Silence
-  - Helicopter
-  - Gunshot
-  - Chainsaw
-  - Handsaw
-  - WoodChop
-  - VehicleEngine
-  - Generator
-  - Speaking
+  - WolfHowl
+  - Lion
+  - Squirrel
+  - Insects
+  - Frogs
+  - BirdChirping
 
 cv_folds: 10
-
-features_test: data/processed/fsc22_classical_lean_val
 
 # mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
 #                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
@@ -53,7 +45,7 @@ runs:
   #     gamma:  scale
 
   - model: pca_svm
-    name:  fsc22_12_classes_augmented_svm_pca_train
+    name:  fsc22_animals_mini_svm_pca_train
     params:
       n_components: 50
       C:            0.1
@@ -61,14 +53,14 @@ runs:
       gamma:        scale
 
   - model: pca_lda
-    name:  fsc22_12_classes_augmented_lda_pca_train
+    name:  fsc22_animals_mini_lda_pca_train
     params:
       n_components_pca: 50
       n_components_lda: null
       solver: svd
 
   - model: decision_tree
-    name:  fsc22_12_classes_augmented_dtree_train
+    name:  fsc22_animals_mini_dtree_train
     params:
       max_depth:        10
       min_samples_leaf: 2
@@ -80,7 +72,7 @@ runs:
   #     max_depth:    20
 
   - model: pca_knn
-    name: fsc22_12_classes_augmented_knn_pca_train
+    name: fsc22_animals_mini_knn_pca_train
     params:
       n_components: 50
       n_neighbors: 7
@@ -97,7 +89,9 @@ runs:
   #   data/processed/fsc22_mfcc_seq_train  (shape: N × T × D)
 
   - model: mlp
-    name:  fsc22_12_classes_augmented_mlp_train
+    name:  fsc22_animals_mini_mlp_train
+    features_dir: data/processed/fsc22_classical_mini_train
+    features_test: data/processed/fsc22_classical_mini_val
     params:
       hidden_units: [256, 128]
       dropout:      0.1
@@ -105,17 +99,15 @@ runs:
       batch_size:   16
       learning_rate: 0.003
 
-  - model: cnn
-    name:  fsc22_12_classes_augmented_cnn_melspec_train
-    features_dir: data/processed/fsc22_melspec_augmented_train
-    features_test: data/processed/fsc22_melspec_val
-    params:
-      filters:    32
-      n_blocks:   3
-      dropout:    0.2
-      epochs:     100
-      batch_size: 16
-      learning_rate: 0.0014
+  # - model: cnn
+  #   name:  fsc22_6_classes_cnn_melspec_train_2
+  #   features_dir: data/processed/fsc22_melspec_train
+  #   params:
+  #     filters:    32
+  #     n_blocks:   3
+  #     dropout:    0.3
+  #     epochs:     50
+  #     batch_size: 32
 
   # - model: cnn
   #   name:  fsc22_6_classes_cnn_mfcc_train_2

@@ -186,7 +186,15 @@ def _apply_class_filter(
     if not class_filter:
         return X, y, label_names
     filter_set = set(class_filter)
-    allowed_indices = [i for i, n in enumerate(label_names) if n in filter_set]
+    # Sort by class name so the integer encoding is identical regardless of the
+    # loader that produced this feature set (e.g. audio_folder yields alphabetical
+    # order; FSC22Loader yields metadata order). Without canonical ordering,
+    # training and test sets produce different label maps → systematic mismatch.
+    allowed_pairs = sorted(
+        [(i, n) for i, n in enumerate(label_names) if n in filter_set],
+        key=lambda p: p[1],
+    )
+    allowed_indices = [i for i, _ in allowed_pairs]
     if not allowed_indices:
         raise ValueError(
             f"[{run_label}] class_filter {sorted(filter_set)} matched no classes in "
@@ -212,15 +220,16 @@ def _tune_classical(
     """GridSearchCV for one classical run. Returns a result dict or None."""
     from sklearn.model_selection import GridSearchCV, StratifiedKFold, train_test_split
 
-    model_name   = run_cfg["model"]
-    run_label    = run_cfg.get("name") or model_name
-    features_dir = Path(run_cfg.get("features_dir") or default_cfg.get("features_dir", ""))
-    output_dir   = Path(run_cfg.get("output_dir")   or default_cfg["output_dir"]) / run_label
-    val_split    = float(run_cfg.get("val_split")   or default_cfg.get("val_split", 0.2))
-    cv           = int(run_cfg.get("cv")            or default_cfg.get("cv", 5))
-    scoring      = str(run_cfg.get("scoring")       or default_cfg.get("scoring", "f1_macro"))
-    param_grid   = run_cfg.get("grid") or {}
-    class_filter = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
+    model_name        = run_cfg["model"]
+    run_label         = run_cfg.get("name") or model_name
+    features_dir      = Path(run_cfg.get("features_dir") or default_cfg.get("features_dir", ""))
+    features_test_raw = run_cfg.get("features_test") or default_cfg.get("features_test")
+    output_dir        = Path(run_cfg.get("output_dir")   or default_cfg["output_dir"]) / run_label
+    val_split         = float(run_cfg.get("val_split")   or default_cfg.get("val_split", 0.2))
+    cv                = int(run_cfg.get("cv")            or default_cfg.get("cv", 5))
+    scoring           = str(run_cfg.get("scoring")       or default_cfg.get("scoring", "f1_macro"))
+    param_grid        = run_cfg.get("grid") or {}
+    class_filter      = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
 
     logger.info("[%s] Loading features from %s", run_label, features_dir)
     feature_set = FeaturePipeline.load(features_dir)
@@ -292,6 +301,38 @@ def _tune_classical(
         val_metrics.get("val_f1_macro",  float("nan")),
     )
 
+    # ── Test-set evaluation (held-out, never seen during search) ──────────
+    test_metrics: dict = {}
+    if features_test_raw:
+        test_dir = Path(features_test_raw)
+        if not test_dir.exists():
+            logger.warning("[%s] features_test not found: %s — skipping test eval.", run_label, test_dir)
+        else:
+            test_fs = FeaturePipeline.load(test_dir)
+            X_test, y_test = test_fs.features, test_fs.labels
+            if y_test is None:
+                logger.warning("[%s] Test FeatureSet has no labels — skipping test eval.", run_label)
+            else:
+                X_test_f, y_test_f, _ = _apply_class_filter(
+                    X_test.reshape(len(X_test), -1).astype(np.float32),
+                    y_test, test_fs.label_names or [], class_filter, run_label,
+                )
+                y_pred_test  = best_estimator.predict(X_test_f)
+                y_proba_test: Optional[np.ndarray] = None
+                if hasattr(best_estimator, "predict_proba"):
+                    try:
+                        y_proba_test = best_estimator.predict_proba(X_test_f)
+                    except Exception:
+                        pass
+                test_metrics = compute_metrics(y_test_f, y_pred_test, y_proba_test, label_names)
+                logger.info(
+                    "[%s] Test accuracy=%.4f  f1_macro=%.4f  (n=%d)",
+                    run_label,
+                    test_metrics.get("val_accuracy", float("nan")),
+                    test_metrics.get("val_f1_macro", float("nan")),
+                    len(y_test_f),
+                )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     model_path    = output_dir / f"{model_name}.joblib"
     joblib.dump(best_estimator, model_path)
@@ -313,6 +354,10 @@ def _tune_classical(
     with mlflow_module.start_run(run_name=run_name) as active_run:
         log_run_to_mlflow(active_run, mlflow_params, log_metrics, output_dir)
         import mlflow
+        if test_metrics:
+            for k, v in test_metrics.items():
+                if isinstance(v, (int, float)):
+                    mlflow.log_metric(f"test_{k}", float(v))
         mlflow.log_artifact(str(model_path))
 
     return {
@@ -401,17 +446,18 @@ def _tune_deep_optuna(
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     from sklearn.model_selection import train_test_split
 
-    model_name   = run_cfg["model"]
-    run_label    = run_cfg.get("name") or model_name
-    features_dir = Path(run_cfg.get("features_dir") or default_cfg.get("features_dir", ""))
-    output_dir   = Path(run_cfg.get("output_dir")   or default_cfg["output_dir"]) / run_label
-    val_split    = float(run_cfg.get("val_split")   or default_cfg.get("val_split", 0.2))
-    n_trials     = int(run_cfg.get("n_trials")      or default_cfg.get("n_trials", 20))
-    sweep_epochs = int(run_cfg.get("sweep_epochs")  or default_cfg.get("sweep_epochs", 25))
-    seed         = int(default_cfg.get("seed", 42))
-    pruner_name  = str(run_cfg.get("pruner") or default_cfg.get("pruner", "median")).lower()
-    search_space = run_cfg.get("search_space") or {}
-    class_filter = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
+    model_name        = run_cfg["model"]
+    run_label         = run_cfg.get("name") or model_name
+    features_dir      = Path(run_cfg.get("features_dir") or default_cfg.get("features_dir", ""))
+    features_test_raw = run_cfg.get("features_test") or default_cfg.get("features_test")
+    output_dir        = Path(run_cfg.get("output_dir")   or default_cfg["output_dir"]) / run_label
+    val_split         = float(run_cfg.get("val_split")   or default_cfg.get("val_split", 0.2))
+    n_trials          = int(run_cfg.get("n_trials")      or default_cfg.get("n_trials", 20))
+    sweep_epochs      = int(run_cfg.get("sweep_epochs")  or default_cfg.get("sweep_epochs", 25))
+    seed              = int(default_cfg.get("seed", 42))
+    pruner_name       = str(run_cfg.get("pruner") or default_cfg.get("pruner", "median")).lower()
+    search_space      = run_cfg.get("search_space") or {}
+    class_filter      = run_cfg.get("class_filter") or default_cfg.get("class_filter") or None
 
     logger.info("[%s] Loading features from %s", run_label, features_dir)
     feature_set = FeaturePipeline.load(features_dir)
@@ -562,6 +608,48 @@ def _tune_deep_optuna(
         "best_params":       {k: str(v) for k, v in best_trial.params.items()},
         "trials":            all_records,
     }, indent=2))
+
+    # ── Test-set evaluation on the best trial (held-out, never seen by Optuna) ──
+    if features_test_raw and best_trial.number in trial_records:
+        test_dir = Path(features_test_raw)
+        if not test_dir.exists():
+            logger.warning("[%s] features_test not found: %s — skipping test eval.", run_label, test_dir)
+        else:
+            try:
+                test_fs = FeaturePipeline.load(test_dir)
+                X_test, y_test = test_fs.features, test_fs.labels
+                if y_test is None:
+                    logger.warning("[%s] Test FeatureSet has no labels — skipping test eval.", run_label)
+                else:
+                    X_test_f, y_test_f, _ = _apply_class_filter(
+                        X_test, y_test, test_fs.label_names or [], class_filter, run_label,
+                    )
+                    best_trial_dir = output_dir / f"trial_{best_trial.number:02d}"
+                    trainer_cls    = get_model(model_name)
+                    best_trainer   = trainer_cls.load(best_trial_dir / "model.keras")
+                    y_pred_test    = best_trainer.predict(X_test_f)
+                    y_proba_test   = best_trainer.predict_proba(X_test_f)
+                    test_metrics   = compute_metrics(y_test_f, y_pred_test, y_proba_test, label_names)
+                    logger.info(
+                        "[%s] Best trial test accuracy=%.4f  f1_macro=%.4f  (n=%d)",
+                        run_label,
+                        test_metrics.get("val_accuracy", float("nan")),
+                        test_metrics.get("val_f1_macro", float("nan")),
+                        len(y_test_f),
+                    )
+                    # Append test metrics to the best trial's existing MLflow run
+                    best_run_id = trial_records[best_trial.number].get("run_id")
+                    if best_run_id:
+                        import mlflow
+                        with mlflow_module.start_run(run_id=best_run_id):
+                            for k, v in test_metrics.items():
+                                if isinstance(v, (int, float)):
+                                    mlflow.log_metric(f"test_{k}", float(v))
+                    # Surface test metrics in the returned record
+                    trial_records[best_trial.number]["test_accuracy"] = test_metrics.get("val_accuracy", 0.0)
+                    trial_records[best_trial.number]["test_f1_macro"] = test_metrics.get("val_f1_macro", 0.0)
+            except Exception as exc:
+                logger.warning("[%s] Test evaluation of best trial failed: %s", run_label, exc)
 
     return trial_records.get(best_trial.number)
 

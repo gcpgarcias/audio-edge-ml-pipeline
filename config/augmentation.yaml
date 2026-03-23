@@ -1,0 +1,149 @@
+# Stage 1b — Audio augmentation config for FSC22
+#
+# Usage:
+#   python -m src.preprocessing.augment --config config/augmentation.yaml
+#
+# Output is a class-per-subfolder directory fed into Stage 2 via audio_folder loader:
+#
+#   python -m src.preprocessing.pipeline \
+#       --loader audio_folder \
+#       --audio-folder data/raw/fsc22_augmented \
+#       --extractor audio_classical \
+#       --output data/processed/fsc22_augmented_classical_train
+
+# ── Source ────────────────────────────────────────────────────────────────────
+
+loader:  fsc22               # fsc22 | audio_folder
+dataset: data/raw/fsc22      # FSC22 root (Audio Wise V1.0-* + Metadata-* subdirs)
+split:   train               # only augment the training split — never val/test
+seed:    42                  # must match FSC22Loader seed so splits are identical
+
+# ── Output ────────────────────────────────────────────────────────────────────
+
+output_dir:      data/raw/fsc22_augmented
+n_augments:      4            # augmented copies per original file (52 → 260 per class)
+preserve_length: true         # trim/pad augmented audio to original clip length
+
+# ── Default augmentations (applied to every class unless overridden) ──────────
+#
+# Each augmented copy applies ALL augmentations in sequence with
+# independently re-sampled parameters (compound augmentation).
+
+augmentations:
+  - type:          volume_scale
+    min_gain:      0.7
+    max_gain:      1.3
+
+  - type:          gaussian_noise
+    min_amplitude: 0.001
+    max_amplitude: 0.008
+
+  - type:          time_stretch
+    min_rate:      0.85
+    max_rate:      1.15
+
+  - type:          pitch_shift
+    min_steps:     -3.0
+    max_steps:      3.0
+
+  - type:          time_shift
+    max_fraction:   0.2
+
+# ── Per-class overrides ────────────────────────────────────────────────────────
+#
+# Classes where the default augmentations are inappropriate get a custom list.
+
+class_overrides:
+
+  # Silence must never receive noise injection — that changes its class identity.
+  # Time stretching kept conservative (signal is effectively flat).
+  Silence:
+    augmentations:
+      - type:     volume_scale
+        min_gain: 0.8
+        max_gain: 1.2
+      - type:     time_stretch
+        min_rate: 0.9
+        max_rate: 1.1
+      - type:     time_shift
+        max_fraction: 0.2
+
+  # Pitch-sensitive classes: remove pitch_shift to avoid changing the
+  # discriminative signal (tonal structure IS the class identity).
+  BirdChirping:
+    augmentations:
+      - type:          volume_scale
+        min_gain:      0.7
+        max_gain:      1.3
+      - type:          gaussian_noise
+        min_amplitude: 0.001
+        max_amplitude: 0.005
+      - type:          time_stretch
+        min_rate:      0.9
+        max_rate:      1.1
+      - type:          time_shift
+        max_fraction:  0.2
+
+  Whistling:
+    augmentations:
+      - type:          volume_scale
+        min_gain:      0.7
+        max_gain:      1.3
+      - type:          gaussian_noise
+        min_amplitude: 0.001
+        max_amplitude: 0.005
+      - type:          time_stretch
+        min_rate:      0.9
+        max_rate:      1.1
+      - type:          time_shift
+        max_fraction:  0.2
+
+  WolfHowl:
+    augmentations:
+      - type:          volume_scale
+        min_gain:      0.7
+        max_gain:      1.3
+      - type:          gaussian_noise
+        min_amplitude: 0.001
+        max_amplitude: 0.006
+      - type:          time_stretch
+        min_rate:      0.9
+        max_rate:      1.1
+      - type:          time_shift
+        max_fraction:  0.2
+
+  # Transient sounds: keep time_stretch very conservative to preserve the
+  # sharp attack envelope that defines the class.
+  Gunshot:
+    augmentations:
+      - type:          volume_scale
+        min_gain:      0.7
+        max_gain:      1.3
+      - type:          gaussian_noise
+        min_amplitude: 0.001
+        max_amplitude: 0.006
+      - type:          time_stretch
+        min_rate:      0.95
+        max_rate:      1.05
+      - type:          pitch_shift
+        min_steps:     -2.0
+        max_steps:      2.0
+      - type:          time_shift
+        max_fraction:  0.2
+
+  Firework:
+    augmentations:
+      - type:          volume_scale
+        min_gain:      0.7
+        max_gain:      1.3
+      - type:          gaussian_noise
+        min_amplitude: 0.001
+        max_amplitude: 0.006
+      - type:          time_stretch
+        min_rate:      0.95
+        max_rate:      1.05
+      - type:          pitch_shift
+        min_steps:     -2.0
+        max_steps:      2.0
+      - type:          time_shift
+        max_fraction:  0.2

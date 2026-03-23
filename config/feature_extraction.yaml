@@ -9,8 +9,8 @@
 # Required per-experiment keys: extractor, loader
 # (may be supplied at the top level and inherited).
 
-dataset: data/raw/fsc22
-split:   train
+dataset: data/raw/fsc22_augmented
+split:   ~        # augmented dir has no split subfolders — classes sit at root level
 
 # ── Experiments ────────────────────────────────────────────────────────────
 
@@ -18,58 +18,51 @@ experiments:
 
   # ── Audio ────────────────────────────────────────────────────────────────
 
-  # - name:      fsc22_classical_train
+  # - name:      fsc22_classical_augmented_train
   #   extractor: audio_classical
-  #   loader:    fsc22
-  #   # output defaults to data/processed/fsc22_classical_train
+  #   loader:    audio_folder
+  #   split:     ~        # augmented dir has no split subfolders — classes sit at root level
+  #   extractor_params:
+  #     n_mfcc: 40
+  #     aggregations:
+  #       - mean
+  #       - std
+  #     features:
+  #       - mfcc
+  #       - spectral_centroid
+  #       - spectral_rolloff
+  #       - spectral_bandwidth
+  #       - spectral_contrast
+  #       - spectral_flatness
+  #       - chroma
+  #       - zcr
+  #       - rms
 
-  # - name:      fsc22_classical_val
+  # - name:      fsc22_classical_small_val
   #   extractor: audio_classical
   #   loader:    fsc22
   #   split:     validation
-
-  - name:      fsc22_classical_mean_train
-    extractor: audio_classical
-    loader:    fsc22
-    split:     train
-    extractor_params:
-      n_mfcc: 40
-      aggregations:
-        - mean
-        # - std
-      features:
-        - mfcc
-        - spectral_centroid
-        - spectral_rolloff
-        - spectral_bandwidth
-        - spectral_contrast
-        - spectral_flatness
-        - chroma
-        - zcr
-        - rms
-
-  - name:      fsc22_classical_lean_val
-    extractor: audio_classical
-    loader:    fsc22
-    split:     validation
-    extractor_params:
-      n_mfcc: 40
-      features:
-        - mfcc
-        - spectral_centroid
-        - spectral_rolloff
-        - spectral_bandwidth
-        - spectral_contrast
-        - spectral_flatness
-        - chroma
-        - zcr
-        - rms
-
-  # - name:      fsc22_melspec_val
-  #   extractor: audio_mel_spec
-  #   loader:    fsc22
   #   extractor_params:
-  #     duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
+  #     n_mfcc: 40
+  #     aggregations:
+  #       - mean
+  #     features:
+  #       - mfcc
+  #       - spectral_centroid
+  #       - spectral_rolloff
+  #       - spectral_bandwidth
+  #       - spectral_contrast
+  #       - spectral_flatness
+  #       - chroma
+  #       - zcr
+  #       - rms
+
+  - name:      fsc22_melspec_augmented_train
+    extractor: audio_mel_spec
+    loader:    audio_folder
+    split:     ~        # augmented dir has no split subfolders — classes sit at root
+    extractor_params:
+      duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
 
   # - name:      fsc22_mfcc_seq_val
   #   extractor: audio_mfcc_seq
