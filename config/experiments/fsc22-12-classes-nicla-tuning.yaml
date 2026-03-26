@@ -12,18 +12,20 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-10-classes-nicla-tuning
+experiment:  fsc22-12-classes-nicla-tuning
 mlflow_uri:  mlruns/
 class_filter:
   - Fire
   - Thunderstorm
   - WaterDrops
   - Silence
+  - Helicopter
   - Gunshot
   - Chainsaw
   - Handsaw
   - WoodChop
   - VehicleEngine
+  - Generator
   - Speaking
 
 
@@ -84,7 +86,7 @@ runs:
   #     kernel: [rbf, linear]
 
   - model:          pca_svm
-    name:           fsc22_10_classes_nicla_40_mels_pca_svm_sweep
+    name:           fsc22_12_classes_nicla_40_mels_pca_svm_sweep
     features_dir:   data/processed/fsc22_classical_nicla_train
     grid:
       n_components: [50, 80, 100]

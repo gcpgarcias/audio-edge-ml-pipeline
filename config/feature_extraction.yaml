@@ -57,12 +57,75 @@ experiments:
   #       - zcr
   #       - rms
 
-  - name:      fsc22_melspec_augmented_train
-    extractor: audio_mel_spec
+  # - name:      fsc22_melspec_augmented_train
+  #   extractor: audio_mel_spec
+  #   loader:    audio_folder
+  #   split:     ~        # augmented dir has no split subfolders — classes sit at root
+  #   extractor_params:
+  #     duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
+
+  # Nicla-friendly classical vector: MFCC (80) + 4 spectral (8) + ZCR (2) + RMS (2) = 92 dims
+  # sr=16000 matches Nicla PDM mic; n_fft=512, n_mels=40 → mel_fb=(40,257)=40KB fits Nicla heap
+  - name:      fsc22_classical_nicla_train
+    extractor: audio_classical
     loader:    audio_folder
-    split:     ~        # augmented dir has no split subfolders — classes sit at root
+    split:     ~        # augmented dir has no split subfolders — classes sit at root level
     extractor_params:
-      duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
+      sample_rate: 16000
+      n_fft:       512
+      hop_length:  160
+      n_mfcc:      40
+      n_mels:      40
+      features:
+        - mfcc
+        - spectral_centroid
+        - spectral_rolloff
+        - spectral_bandwidth
+        - spectral_flatness
+        - zcr
+        - rms
+      aggregations:
+        - mean
+        - std
+
+  - name:      fsc22_classical_nicla_val
+    extractor: audio_classical
+    loader:    fsc22
+    dataset:   data/raw/fsc22
+    split:     validation
+    extractor_params:
+      sample_rate: 16000
+      n_fft:       512
+      hop_length:  160
+      n_mfcc:      40
+      n_mels:      40
+      features:
+        - mfcc
+        - spectral_centroid
+        - spectral_rolloff
+        - spectral_bandwidth
+        - spectral_flatness
+        - zcr
+        - rms
+      aggregations:
+        - mean
+        - std
+
+  # # 2-second mel spec — INT8 first-conv peak = 257 KB, fits Nicla Vision tensor arena
+  # - name:      fsc22_melspec_2s_augmented_train
+  #   extractor: audio_mel_spec
+  #   loader:    audio_folder
+  #   split:     ~
+  #   extractor_params:
+  #     duration: 2.0
+
+  # - name:      fsc22_melspec_2s_val
+  #   extractor: audio_mel_spec
+  #   loader:    fsc22
+  #   dataset:   data/raw/fsc22
+  #   split:     validation
+  #   extractor_params:
+  #     duration: 2.0
 
   # - name:      fsc22_mfcc_seq_val
   #   extractor: audio_mfcc_seq

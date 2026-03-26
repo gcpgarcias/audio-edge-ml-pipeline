@@ -129,6 +129,26 @@ class KerasTrainer(BaseTrainer):
         if hasattr(norm_layer, "adapt"):
             norm_layer.adapt(X_train)
 
+        # Optional: load pretrained weights (fine-tuning).
+        # Copies weights layer-by-layer by name, skipping the Normalization layer
+        # so that the norm statistics stay fitted to the current training data.
+        pretrained_path = self._extra.pop("pretrained_model", None)
+        if pretrained_path:
+            logger.info("Loading pretrained weights from %s", pretrained_path)
+            src = tf.keras.models.load_model(pretrained_path)
+            transferred, skipped = 0, 0
+            for layer in self._model.layers:
+                if isinstance(layer, tf.keras.layers.Normalization):
+                    skipped += 1
+                    continue
+                try:
+                    src_layer = src.get_layer(layer.name)
+                    layer.set_weights(src_layer.get_weights())
+                    transferred += 1
+                except (ValueError, AttributeError):
+                    skipped += 1
+            logger.info("Pretrained weights: %d layers transferred, %d skipped", transferred, skipped)
+
         # Build MLflow epoch callback
         class _MLflowCb(tf.keras.callbacks.Callback):
             def __init__(self, run):

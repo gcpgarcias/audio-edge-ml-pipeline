@@ -552,7 +552,9 @@ def main(argv=None) -> None:
         #   3. None → fallback to calibration features inside _optimize_one
         X_eval: Optional[np.ndarray] = None
         y_eval: Optional[np.ndarray] = None
-        resolved_features_eval = args.features_eval or candidate.get("features_eval_dir")
+        resolved_features_eval = (args.features_eval
+                                   or candidate.get("features_eval_dir")
+                                   or candidate.get("features_val"))
         if resolved_features_eval:
             eval_dir = Path(resolved_features_eval)
             if not eval_dir.exists():
@@ -561,9 +563,10 @@ def main(argv=None) -> None:
                     model_name, eval_dir,
                 )
             else:
-                eval_fs      = FeaturePipeline.load(eval_dir)
-                X_eval_raw   = eval_fs.features.reshape(len(eval_fs.features), -1).astype(np.float32)
-                y_eval_raw   = eval_fs.labels
+                eval_fs           = FeaturePipeline.load(eval_dir)
+                X_eval_raw        = eval_fs.features.reshape(len(eval_fs.features), -1).astype(np.float32)
+                y_eval_raw        = eval_fs.labels
+                eval_label_names  = eval_fs.label_names or []
                 if X_eval_raw.shape[1] != n_features:
                     logger.warning(
                         "[%s] --features-eval shape mismatch (%d vs %d) — "
@@ -576,12 +579,20 @@ def main(argv=None) -> None:
                         model_name,
                     )
                 else:
-                    if class_filter_raw and allowed_indices:
-                        eval_idx_map = {old: new for new, old in enumerate(allowed_indices)}
-                        eval_mask    = np.isin(y_eval_raw, allowed_indices)
-                        X_eval       = X_eval_raw[eval_mask]
-                        y_eval       = np.array(
-                            [eval_idx_map[lbl] for lbl in y_eval_raw[eval_mask]],
+                    if class_filter_raw and label_names:
+                        # Re-encode eval labels by class NAME using the training
+                        # label ordering.  The eval and calibration sets may come
+                        # from different loaders with different class orderings
+                        # (e.g. audio_folder = alphabetical; FSC22Loader =
+                        # dataset order).  Index-based remapping produces
+                        # scrambled labels and near-chance accuracy.
+                        train_name_to_idx = {n: i for i, n in enumerate(label_names)}
+                        train_class_set   = set(label_names)
+                        sample_names      = [eval_label_names[i] for i in y_eval_raw]
+                        eval_mask         = np.array([n in train_class_set for n in sample_names])
+                        X_eval            = X_eval_raw[eval_mask]
+                        y_eval            = np.array(
+                            [train_name_to_idx[n] for n in sample_names if n in train_class_set],
                             dtype=y_eval_raw.dtype,
                         )
                     else:

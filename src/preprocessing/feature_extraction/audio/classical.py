@@ -133,6 +133,7 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
         self,
         sample_rate:   int              = 22050,
         n_mfcc:        int              = 40,
+        n_mels:        int              = 128,
         n_fft:         int              = 1024,
         hop_length:    int              = 512,
         min_duration:  float            = _MIN_DURATION,
@@ -141,6 +142,7 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
     ) -> None:
         self.sample_rate  = sample_rate
         self.n_mfcc       = n_mfcc
+        self.n_mels       = n_mels
         self.n_fft        = n_fft
         self.hop_length   = hop_length
         self.min_duration = min_duration
@@ -280,7 +282,7 @@ class AudioClassicalExtractor(BaseFeatureExtractor):
         mfcc = None
         if active & {"mfcc", "delta_mfcc", "delta2_mfcc"}:
             mfcc = librosa.feature.mfcc(y=audio, sr=sr, n_mfcc=self.n_mfcc,
-                                        n_fft=n, hop_length=hop)
+                                        n_mels=self.n_mels, n_fft=n, hop_length=hop)
 
         d_mfcc = None
         if "delta_mfcc" in active:

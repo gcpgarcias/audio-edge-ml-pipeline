@@ -782,6 +782,9 @@ def main(argv=None) -> None:
                 "model_size_kb": r.get("model_size_kb",  0.0),
                 "best_params":   r.get("best_params", {}),
                 "artifact_uri":  r.get("artifact_uri", ""),
+                "features_dir":  r.get("features_dir", ""),
+                "features_val":  r.get("features_test", ""),
+                "class_filter":  r.get("class_filter") or None,
             }
             for rank, r in enumerate(results, 1)
         ],
