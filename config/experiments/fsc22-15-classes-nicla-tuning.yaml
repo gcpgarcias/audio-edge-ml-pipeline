@@ -12,15 +12,25 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-nicla-6-classes-tuning
+experiment:  fsc22-15-classes-nicla-tuning
 mlflow_uri:  mlruns/
 class_filter:
   - Fire
+  - Rain
   - Thunderstorm
   - Silence
+  - Helicopter
+  - VehicleEngine
   - Speaking
+  - Gunshot
+  - Chainsaw
   - Handsaw
+  - WoodChop
+  - Insect
   - BirdChirping
+  - WingFlaping
+  - Squirrel
+
 
 features_test: data/processed/fsc22_classical_nicla_val
 
@@ -79,7 +89,7 @@ runs:
   #     kernel: [rbf, linear]
 
   - model:          pca_svm
-    name:           fsc22_nicla_6_classes_pca_svm_sweep
+    name:           fsc22_15_classes_nicla_pca_svm_sweep
     features_dir:   data/processed/fsc22_classical_nicla_train
     grid:
       n_components: [50, 80, 100]

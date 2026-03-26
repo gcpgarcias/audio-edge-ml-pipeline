@@ -5,15 +5,15 @@ No TFLite required.  Inference is pure ulab matrix math:
     record → MFCC + spectral features → StandardScaler → PCA → linear SVM (OvO)
 
 Deploy bundle (copy ALL files to the board root via OpenMV IDE):
-    scaler_mean.npy
-    scaler_scale.npy
-    pca_mean.npy
-    pca_components.npy
-    svm_coef.npy
-    svm_intercept.npy
-    mel_fb.npy
-    dct_matrix.npy
-    freq_bins.npy
+    scaler_mean.bin
+    scaler_scale.bin
+    pca_mean.bin
+    pca_components.bin
+    svm_coef.bin
+    svm_intercept.bin
+    mel_fb.bin
+    dct_matrix.bin
+    freq_bins.bin
     label_names.json
     feature_params.json
 
@@ -91,9 +91,10 @@ HOP_LENGTH  = int(fp["hop_length"])
 N_MELS      = int(fp["n_mels"])
 DURATION    = float(fp["duration"])
 N_SAMPLES   = int(DURATION * SAMPLE_RATE)
-N_BINS      = N_FFT // 2 + 1
 N_PCA       = int(fp["n_pca"])
 N_CLASSES   = int(fp["n_classes"])
+N_BINS      = int(fp["n_bins"])
+_shapes     = fp["shapes"]
 
 print(f"sr={SAMPLE_RATE}  n_fft={N_FFT}  hop={HOP_LENGTH}  "
       f"n_mels={N_MELS}  n_mfcc={N_MFCC}  duration={DURATION}s")
@@ -102,17 +103,28 @@ with open("label_names.json") as f:
     labels = json.load(f)
 print(f"Labels ({len(labels)}): {labels}")
 
+
+def _load_bin(fname, shape):
+    """Load a raw float32 binary file and reshape."""
+    with open(fname, "rb") as f:
+        data = f.read()
+    arr = np.frombuffer(data, dtype=np.float)
+    if len(shape) > 1:
+        arr = arr.reshape(tuple(shape))
+    return arr
+
+
 # Load model parameters in order of increasing size to maximise contiguous heap
-scaler_mean   = np.load("scaler_mean.npy")      # (n_features,)
-scaler_scale  = np.load("scaler_scale.npy")     # (n_features,)
-pca_mean      = np.load("pca_mean.npy")         # (n_features,)
-svm_intercept = np.load("svm_intercept.npy")    # (n_pairs,)
-freq_bins     = np.load("freq_bins.npy")        # (N_BINS,)
-dct_matrix    = np.load("dct_matrix.npy")       # (N_MFCC, N_MELS)
-svm_coef      = np.load("svm_coef.npy")         # (n_pairs, N_PCA)
-pca_comps     = np.load("pca_components.npy")   # (N_PCA, n_features)
+scaler_mean   = _load_bin("scaler_mean.bin",   _shapes["scaler_mean"])
+scaler_scale  = _load_bin("scaler_scale.bin",  _shapes["scaler_scale"])
+pca_mean      = _load_bin("pca_mean.bin",      _shapes["pca_mean"])
+svm_intercept = _load_bin("svm_intercept.bin", _shapes["svm_intercept"])
+freq_bins     = _load_bin("freq_bins.bin",     _shapes["freq_bins"])
+dct_matrix    = _load_bin("dct_matrix.bin",    _shapes["dct_matrix"])
+svm_coef      = _load_bin("svm_coef.bin",      _shapes["svm_coef"])
+pca_comps     = _load_bin("pca_components.bin",_shapes["pca_components"])
 gc.collect()
-mel_fb        = np.load("mel_fb.npy")           # (N_MELS, N_BINS)  — largest array
+mel_fb        = _load_bin("mel_fb.bin",        _shapes["mel_fb"])   # largest
 gc.collect()
 
 print(f"Free heap after artifact load: {gc.mem_free()} bytes")
@@ -120,8 +132,15 @@ print(f"Free heap after artifact load: {gc.mem_free()} bytes")
 # Pre-compute Hann window (N_FFT samples)
 _hann = np.array(
     [0.5 * (1.0 - np.cos(2.0 * 3.14159265 * i / N_FFT)) for i in range(N_FFT)],
-    dtype=np.float32,
+    dtype=np.float,
 )
+
+audio.init(channels=1, frequency=SAMPLE_RATE, gain_db=24, highpass=0.9883)
+
+# Pre-allocate audio buffer once to avoid repeated 96 KB allocs in the loop.
+# _pcm_i16 is a VIEW of _pcm_buf — when _cb fills _pcm_buf, _pcm_i16 updates too.
+_pcm_buf = bytearray(N_SAMPLES * 2)           # int16 raw PCM  (96 KB)
+_pcm_i16 = np.frombuffer(_pcm_buf, dtype=np.int16)
 
 _led_blue()
 print("Ready.")
@@ -132,11 +151,11 @@ print("Ready.")
 # ---------------------------------------------------------------------------
 
 def record_audio() -> "np.ndarray":
-    """Record DURATION seconds of mono PCM at SAMPLE_RATE.
+    """Record DURATION seconds of mono PCM into the pre-allocated buffer.
 
-    Returns float32 array in [-1, 1] of length N_SAMPLES.
+    Returns a view of _pcm_i16 (int16).  extract_features() converts
+    one frame at a time to float to keep peak memory low.
     """
-    _buf  = bytearray(N_SAMPLES * 2)   # int16 PCM
     _pos  = [0]
     _done = [False]
 
@@ -144,19 +163,17 @@ def record_audio() -> "np.ndarray":
         if _done[0]:
             return
         n = min(len(pcm), N_SAMPLES * 2 - _pos[0])
-        _buf[_pos[0]:_pos[0] + n] = pcm[:n]
+        _pcm_buf[_pos[0]:_pos[0] + n] = pcm[:n]
         _pos[0] += n
         if _pos[0] >= N_SAMPLES * 2:
             _done[0] = True
 
-    audio.init(channels=1, frequency=SAMPLE_RATE, gain_db=24, highpass=0.9883)
     audio.start_streaming(_cb)
     while not _done[0]:
         pass
     audio.stop_streaming()
 
-    pcm_i16 = np.frombuffer(_buf, dtype=np.int16)
-    return pcm_i16.astype(np.float32) / 32768.0
+    return _pcm_i16
 
 
 # ---------------------------------------------------------------------------
@@ -182,13 +199,15 @@ def record_audio() -> "np.ndarray":
 def extract_features(pcm: "np.ndarray") -> "np.ndarray":
     """Compute 92-dim classical feature vector from raw audio.
 
+    pcm: int16 ndarray — converted to float32 one frame at a time to avoid
+    allocating a full-length float32 buffer (saves ~192 KB).
     Uses online mean/variance to avoid storing full (N_MFCC, n_frames) matrix.
     """
     n_frames = (len(pcm) - N_FFT) // HOP_LENGTH + 1
 
     # Online accumulators: sum and sum-of-squares for each scalar series
-    mfcc_sum    = np.zeros(N_MFCC, dtype=np.float32)
-    mfcc_sum_sq = np.zeros(N_MFCC, dtype=np.float32)
+    mfcc_sum    = np.zeros(N_MFCC, dtype=np.float)
+    mfcc_sum_sq = np.zeros(N_MFCC, dtype=np.float)
 
     c_sum = c_sum_sq = 0.0   # centroid
     ro_sum = ro_sum_sq = 0.0  # rolloff
@@ -199,18 +218,22 @@ def extract_features(pcm: "np.ndarray") -> "np.ndarray":
 
     for i in range(n_frames):
         start    = i * HOP_LENGTH
-        frame    = pcm[start:start + N_FFT]
+        frame    = np.array(pcm[start:start + N_FFT], dtype=np.float) / 32768.0
         windowed = frame * _hann
 
         # ── Power spectrum ──────────────────────────────────────────────────
-        spectrum = npfft.fft(windowed)
-        mag      = np.abs(spectrum[:N_BINS])     # one-sided magnitude
-        power    = mag ** 2                       # one-sided power
+        # npfft.fft returns (re, im) tuple in ulab — no complex array support
+        re, im = npfft.fft(windowed)
+        power  = re[:N_BINS] ** 2 + im[:N_BINS] ** 2   # one-sided power
+        mag    = power ** 0.5                            # one-sided magnitude
 
         # ── MFCCs ──────────────────────────────────────────────────────────
-        mel_e   = np.dot(mel_fb, power)           # (N_MELS,)
-        log_mel = np.log(mel_e + 1e-10)           # (N_MELS,)
-        mfcc_v  = np.dot(dct_matrix, log_mel)     # (N_MFCC,)
+        # librosa.mfcc uses power_to_db internally: 10*log10(mel_energy).
+        # ln(x) = log10(x) / log10(e), so 10*log10(x) = 10/ln(10) * ln(x)
+        # 10 / ln(10) = 4.342944819
+        mel_e   = np.dot(mel_fb, power)                      # (N_MELS,)
+        log_mel = np.log(mel_e + 1e-10) * 4.342944819        # dB scale
+        mfcc_v  = np.dot(dct_matrix, log_mel)                # (N_MFCC,)
         mfcc_sum    += mfcc_v
         mfcc_sum_sq += mfcc_v ** 2
 
@@ -234,7 +257,7 @@ def extract_features(pcm: "np.ndarray") -> "np.ndarray":
         ro_sum_sq += ro * ro
 
         # ── Spectral bandwidth ──────────────────────────────────────────────
-        bw = float(np.sqrt(np.sum(((freq_bins - c) ** 2) * mag) / mag_sum + 1e-10))
+        bw = float((np.sum(((freq_bins - c) ** 2) * mag) / mag_sum + 1e-10) ** 0.5)
         bw_sum    += bw
         bw_sum_sq += bw * bw
 
@@ -253,7 +276,7 @@ def extract_features(pcm: "np.ndarray") -> "np.ndarray":
         z_sum_sq += z * z
 
         # ── RMS energy ─────────────────────────────────────────────────────
-        r = float(np.sqrt(np.mean(frame ** 2)))
+        r = float(np.mean(frame ** 2) ** 0.5)
         r_sum    += r
         r_sum_sq += r * r
 
@@ -262,8 +285,9 @@ def extract_features(pcm: "np.ndarray") -> "np.ndarray":
 
     def _mean_std_mfcc():
         mean = mfcc_sum / n
-        std  = np.sqrt(np.maximum(mfcc_sum_sq / n - mean ** 2,
-                                   np.zeros(N_MFCC, dtype=np.float32)))
+        var  = mfcc_sum_sq / n - mean ** 2
+        var  = var * (var > 0)   # clip negative variance (numerical noise)
+        std  = var ** 0.5
         return mean, std
 
     def _ms(s, s2):
@@ -280,15 +304,15 @@ def extract_features(pcm: "np.ndarray") -> "np.ndarray":
     z_m,  z_s  = _ms(z_sum,  z_sum_sq)
     r_m,  r_s  = _ms(r_sum,  r_sum_sq)
 
-    feat = np.concatenate([
+    feat = np.concatenate((
         mfcc_mean, mfcc_std,                                    # 80
-        np.array([c_m,  c_s],  dtype=np.float32),              #  2
-        np.array([ro_m, ro_s], dtype=np.float32),              #  2
-        np.array([bw_m, bw_s], dtype=np.float32),              #  2
-        np.array([fl_m, fl_s], dtype=np.float32),              #  2
-        np.array([z_m,  z_s],  dtype=np.float32),              #  2
-        np.array([r_m,  r_s],  dtype=np.float32),              #  2
-    ])
+        np.array([c_m,  c_s],  dtype=np.float),              #  2
+        np.array([ro_m, ro_s], dtype=np.float),              #  2
+        np.array([bw_m, bw_s], dtype=np.float),              #  2
+        np.array([fl_m, fl_s], dtype=np.float),              #  2
+        np.array([z_m,  z_s],  dtype=np.float),              #  2
+        np.array([r_m,  r_s],  dtype=np.float),              #  2
+    ))
     return feat   # (92,)
 
 
@@ -346,12 +370,21 @@ while True:
     pcm = record_audio()
     print(f"  recorded in {time.ticks_diff(time.ticks_ms(), t0)} ms")
 
+    # Diagnostic: check audio energy — should be > 0 if mic is capturing sound
+    pcm_f = np.array(pcm[:512], dtype=np.float) / 32768.0
+    rms = float(np.mean(pcm_f ** 2) ** 0.5)
+    print(f"  PCM rms (first 512 samples): {rms:.5f}")
+
     # 2. Extract features
     _led_yellow()
     print("Extracting features …")
     t0   = time.ticks_ms()
     feat = extract_features(pcm)
     print(f"  done in {time.ticks_diff(time.ticks_ms(), t0)} ms  dim={len(feat)}")
+
+    # Diagnostic: spot-check a few feature values
+    print(f"  feat[0..3] (mfcc mean): {float(feat[0]):.3f} {float(feat[1]):.3f} {float(feat[2]):.3f} {float(feat[3]):.3f}")
+    print(f"  feat[80..83] (spectral): {float(feat[80]):.1f} {float(feat[81]):.1f} {float(feat[82]):.1f} {float(feat[83]):.1f}")
 
     # 3. Classify
     t0               = time.ticks_ms()

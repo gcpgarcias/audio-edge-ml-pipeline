@@ -146,24 +146,28 @@ def export(
     print(f"SVM coef_ shape: {svm.coef_.shape}  "
           f"intercept_ shape: {svm.intercept_.shape}")
 
-    # ── Save scaler ──────────────────────────────────────────────────────────
+    # ── Save arrays as raw binary (.bin) ─────────────────────────────────────
+    # ulab's np.load has a header-size bug: arrays whose shape string exceeds
+    # 54 chars produce a 128-byte numpy header that ulab cannot parse.
+    # Raw binary files have no header — load on device with np.frombuffer().
+
+    def _save_bin(name: str, arr: np.ndarray) -> None:
+        arr = np.ascontiguousarray(arr, dtype=np.float32)
+        arr.tofile(output_dir / f"{name}.bin")
+
     if scaler is not None:
-        np.save(output_dir / "scaler_mean.npy",  scaler.mean_.astype(np.float32))
-        np.save(output_dir / "scaler_scale.npy", scaler.scale_.astype(np.float32))
+        _save_bin("scaler_mean",  scaler.mean_)
+        _save_bin("scaler_scale", scaler.scale_)
     else:
-        # Identity scaler: mean=0, scale=1
         n_feat = pca.components_.shape[1]
-        np.save(output_dir / "scaler_mean.npy",  np.zeros(n_feat, dtype=np.float32))
-        np.save(output_dir / "scaler_scale.npy", np.ones(n_feat,  dtype=np.float32))
+        _save_bin("scaler_mean",  np.zeros(n_feat, dtype=np.float32))
+        _save_bin("scaler_scale", np.ones(n_feat,  dtype=np.float32))
         print("  WARNING: no StandardScaler found — saving identity transform.")
 
-    # ── Save PCA ─────────────────────────────────────────────────────────────
-    np.save(output_dir / "pca_mean.npy",       pca.mean_.astype(np.float32))
-    np.save(output_dir / "pca_components.npy", pca.components_.astype(np.float32))
-
-    # ── Save SVM (primal form, linear kernel) ────────────────────────────────
-    np.save(output_dir / "svm_coef.npy",      svm.coef_.astype(np.float32))
-    np.save(output_dir / "svm_intercept.npy", svm.intercept_.astype(np.float32))
+    _save_bin("pca_mean",       pca.mean_)
+    _save_bin("pca_components", pca.components_)
+    _save_bin("svm_coef",       svm.coef_)
+    _save_bin("svm_intercept",  svm.intercept_)
 
     # ── Label names ──────────────────────────────────────────────────────────
     labels = _label_names(features_dir, train_config)
@@ -176,49 +180,58 @@ def export(
         json.dump(labels, f, indent=2)
     print(f"  Labels: {labels}")
 
-    # ── Feature extraction parameters ────────────────────────────────────────
+    sr     = extractor_params["sample_rate"]
+    n_fft  = extractor_params["n_fft"]
+    n_mels = extractor_params["n_mels"]
+    n_mfcc = extractor_params["n_mfcc"]
+    n_bins = n_fft // 2 + 1
+
+    # ── Mel filterbank ───────────────────────────────────────────────────────
+    mel_fb = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels)
+    _save_bin("mel_fb", mel_fb)
+
+    # ── DCT matrix ───────────────────────────────────────────────────────────
+    dct = _dct_matrix(n_mfcc, n_mels)
+    _save_bin("dct_matrix", dct)
+
+    # ── Frequency bin centres ────────────────────────────────────────────────
+    freq_bins = np.linspace(0.0, sr / 2.0, n_bins, dtype=np.float32)
+    _save_bin("freq_bins", freq_bins)
+
+    # ── Feature params + array shapes (for on-device reshape after frombuffer)
     feature_params = {
-        "sample_rate": extractor_params["sample_rate"],
-        "n_mfcc":      extractor_params["n_mfcc"],
-        "n_fft":       extractor_params["n_fft"],
+        "sample_rate": sr,
+        "n_mfcc":      n_mfcc,
+        "n_fft":       n_fft,
         "hop_length":  extractor_params["hop_length"],
-        "n_mels":      extractor_params["n_mels"],
+        "n_mels":      n_mels,
         "duration":    extractor_params["duration"],
         "n_features":  int(pca.components_.shape[1]),
         "n_pca":       n_pca,
         "n_classes":   n_classes,
+        "n_bins":      n_bins,
+        "shapes": {
+            "scaler_mean":    list(scaler.mean_.shape)       if scaler else [int(pca.components_.shape[1])],
+            "scaler_scale":   list(scaler.scale_.shape)      if scaler else [int(pca.components_.shape[1])],
+            "pca_mean":       list(pca.mean_.shape),
+            "pca_components": list(pca.components_.shape),
+            "svm_coef":       list(svm.coef_.shape),
+            "svm_intercept":  list(svm.intercept_.shape),
+            "mel_fb":         list(mel_fb.shape),
+            "dct_matrix":     list(dct.shape),
+            "freq_bins":      list(freq_bins.shape),
+        },
     }
     with open(output_dir / "feature_params.json", "w") as f:
         json.dump(feature_params, f, indent=2)
 
-    sr       = feature_params["sample_rate"]
-    n_fft    = feature_params["n_fft"]
-    n_mels   = feature_params["n_mels"]
-    n_mfcc   = feature_params["n_mfcc"]
-    n_bins   = n_fft // 2 + 1
-
-    # ── Mel filterbank ───────────────────────────────────────────────────────
-    # Matches librosa.feature.mfcc internal mel filterbank exactly.
-    mel_fb = librosa.filters.mel(sr=sr, n_fft=n_fft, n_mels=n_mels)
-    np.save(output_dir / "mel_fb.npy", mel_fb.astype(np.float32))
-
-    # ── DCT matrix ───────────────────────────────────────────────────────────
-    dct = _dct_matrix(n_mfcc, n_mels)
-    np.save(output_dir / "dct_matrix.npy", dct)
-
-    # ── Frequency bin centres ────────────────────────────────────────────────
-    freq_bins = np.linspace(0.0, sr / 2.0, n_bins, dtype=np.float32)
-    np.save(output_dir / "freq_bins.npy", freq_bins)
-
     # ── Summary ──────────────────────────────────────────────────────────────
-    npy_files = list(output_dir.glob("*.npy"))
-    total_kb  = sum(p.stat().st_size / 1024 for p in npy_files)
+    bin_files = list(output_dir.glob("*.bin"))
+    total_kb  = sum(p.stat().st_size / 1024 for p in bin_files)
 
     print(f"\nExported to {output_dir}/")
-    for p in sorted(npy_files):
-        arr = np.load(p)
-        print(f"  {p.name:<28}  shape={str(arr.shape):<18}  "
-              f"{p.stat().st_size/1024:6.1f} KB")
+    for p in sorted(bin_files):
+        print(f"  {p.name:<28}  {p.stat().st_size/1024:6.1f} KB")
     print(f"  {'TOTAL':<28}  {total_kb:6.1f} KB")
 
     # Warnings
