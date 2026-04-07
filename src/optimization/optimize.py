@@ -322,6 +322,8 @@ def _optimize_one(
         "run_name":               run_name,
         "model_name":             model_name,
         "original_model_path":    str(model_path),
+        "class_filter":           candidate.get("class_filter"),
+        "feature_params":         candidate.get("feature_params"),
         "original_size_kb":            original_size_kb,
         "val_accuracy_original_train": val_acc_orig_train,  # training-time metric (different split)
         "val_accuracy_original":       val_acc_orig,        # original model on eval set via fp32 ONNX
@@ -418,9 +420,32 @@ def main(argv=None) -> None:
     )
     parser.add_argument(
         "--shortlist", metavar="JSON",
-        default="data/models/tuned/shortlist.json",
+        default=None,
         help="Path to shortlist.json from Stage 6a (or 5a).  "
-             "Default: data/models/tuned/shortlist.json",
+             "Default: data/models/tuned/shortlist.json  "
+             "Mutually exclusive with --model-path.",
+    )
+    parser.add_argument(
+        "--model-path", metavar="PATH", default=None,
+        dest="model_path",
+        help="Path to a single .keras / .h5 / .joblib model file — skips the shortlist. "
+             "Requires --features. Use --model-name, --class-filter, and --run-name to "
+             "annotate the output report.",
+    )
+    parser.add_argument(
+        "--model-name", metavar="NAME", default=None, dest="model_name",
+        help="Trainer name for the --model-path candidate (e.g. 'cnn'). "
+             "Defaults to the model file's parent directory name.",
+    )
+    parser.add_argument(
+        "--run-name", metavar="NAME", default=None, dest="run_name",
+        help="Run name for the --model-path candidate. "
+             "Defaults to the model file's parent directory name.",
+    )
+    parser.add_argument(
+        "--class-filter", nargs="+", default=None, metavar="CLASS",
+        dest="class_filter",
+        help="Class names to keep when using --model-path (e.g. Fire Silence Speaking).",
     )
     parser.add_argument(
         "--features", metavar="DIR", required=False, default=None,
@@ -461,24 +486,45 @@ def main(argv=None) -> None:
     )
     args = parser.parse_args(argv)
 
-    shortlist_path = Path(args.shortlist)
-    if not shortlist_path.exists():
-        logger.error("Shortlist not found: %s", shortlist_path)
-        sys.exit(1)
+    if args.model_path and args.shortlist:
+        parser.error("--model-path and --shortlist are mutually exclusive.")
+    if not args.model_path and not args.shortlist:
+        args.shortlist = "data/models/tuned/shortlist.json"
 
     safe_experiment = args.experiment.replace("/", "_").replace(" ", "_")
     output_dir = Path(args.output_dir) / safe_experiment
 
-    # ── Load shortlist ─────────────────────────────────────────────────────
-    shortlist_doc  = json.loads(shortlist_path.read_text())
-    candidates     = shortlist_doc.get("candidates", [])
-    if not candidates:
-        logger.error("No candidates in shortlist: %s", shortlist_path)
-        sys.exit(1)
-    logger.info(
-        "Shortlist: %d candidate(s) from experiment '%s'",
-        len(candidates), shortlist_doc.get("experiment", "?"),
-    )
+    # ── Build candidates list ──────────────────────────────────────────────
+    if args.model_path:
+        model_path = Path(args.model_path)
+        if not model_path.exists():
+            logger.error("Model not found: %s", model_path)
+            sys.exit(1)
+        run_name   = args.run_name   or model_path.parent.name
+        model_name = args.model_name or model_path.parent.name
+        candidates = [{
+            "run_id":       "manual",
+            "run_name":     run_name,
+            "model":        model_name,
+            "artifact_uri": str(model_path.parent),
+            "features_dir": args.features,
+            "class_filter": args.class_filter,
+        }]
+        logger.info("Single model: %s  (%s)", model_path, model_name)
+    else:
+        shortlist_path = Path(args.shortlist)
+        if not shortlist_path.exists():
+            logger.error("Shortlist not found: %s", shortlist_path)
+            sys.exit(1)
+        shortlist_doc = json.loads(shortlist_path.read_text())
+        candidates    = shortlist_doc.get("candidates", [])
+        if not candidates:
+            logger.error("No candidates in shortlist: %s", shortlist_path)
+            sys.exit(1)
+        logger.info(
+            "Shortlist: %d candidate(s) from experiment '%s'",
+            len(candidates), shortlist_doc.get("experiment", "?"),
+        )
 
     # ── MLflow ────────────────────────────────────────────────────────────
     mlflow_module = _setup_mlflow(args.mlflow_uri, args.experiment)
@@ -661,7 +707,7 @@ def main(argv=None) -> None:
         "    --opt-dir %s\n"
         "    --max-size-kb 256 --metric val_accuracy_optimized\n"
         "    --output data/models/best_model.json",
-        len(reports), output_dir, shortlist_path, output_dir,
+        len(reports), output_dir, args.shortlist or args.model_path, output_dir,
     )
 
 

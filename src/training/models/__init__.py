@@ -113,6 +113,8 @@ from .deep import (  # noqa: E402, F401
     CNNTrainer,
     RNNTrainer,
     TransformerTrainer,
+    EfficientNetTeacherTrainer,
+    DistillationCNNTrainer,
 )
 
 __all__ = [
@@ -136,4 +138,6 @@ __all__ = [
     "CNNTrainer",
     "RNNTrainer",
     "TransformerTrainer",
+    "EfficientNetTeacherTrainer",
+    "DistillationCNNTrainer",
 ]

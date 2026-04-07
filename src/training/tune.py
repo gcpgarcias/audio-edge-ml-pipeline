@@ -514,19 +514,21 @@ def _tune_deep_optuna(
 
     def objective(trial: optuna.Trial) -> float:
         sampled        = _sample_optuna_params(trial, search_space) if search_space else {}
+        fixed          = run_cfg.get("params") or {}
+        trial_params   = {**fixed, **sampled}   # fixed first; sampled can override
         trial_num      = trial.number
         trial_run_name = f"{run_label}_t{trial_num:02d}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         trial_dir      = output_dir / f"trial_{trial_num:02d}"
 
         logger.info("─" * 56)
-        logger.info("[%s] Trial %d/%d  %s", run_label, trial_num + 1, n_trials, sampled)
+        logger.info("[%s] Trial %d/%d  %s", run_label, trial_num + 1, n_trials, trial_params)
 
         extra_cbs = (
             [_PruningCb(trial, "val_accuracy")] if _PruningCb is not None else []
         )
 
         trainer_cls = get_model(model_name)
-        trainer     = trainer_cls(epochs=sweep_epochs, **sampled)
+        trainer     = trainer_cls(epochs=sweep_epochs, **trial_params)
 
         with mlflow_module.start_run(run_name=trial_run_name) as active_run:
             mlflow_module.log_param("optuna_trial", trial_num)

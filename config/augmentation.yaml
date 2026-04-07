@@ -20,7 +20,7 @@ seed:    42                  # must match FSC22Loader seed so splits are identic
 
 # ── Output ────────────────────────────────────────────────────────────────────
 
-output_dir:      data/raw/fsc22_augmented
+output_dir:      data/raw/fsc22_augmented_2
 n_augments:      4            # augmented copies per original file (52 → 260 per class)
 preserve_length: true         # trim/pad augmented audio to original clip length
 
@@ -43,8 +43,8 @@ augmentations:
     max_rate:      1.15
 
   - type:          pitch_shift
-    min_steps:     -3.0
-    max_steps:      3.0
+    min_steps:     -6.0
+    max_steps:      6.0
 
   - type:          time_shift
     max_fraction:   0.2

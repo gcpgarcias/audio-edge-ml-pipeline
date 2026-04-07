@@ -13,23 +13,16 @@
 features_dir:      data/processed/fsc22_classical_augmented_train
 output_dir:        data/models
 experiment:        fsc22-nicla
-class_filter:
-  - Fire
-  - Thunderstorm
-  - WaterDrops
-  - Silence
-  - Helicopter
-  - Gunshot
-  - Chainsaw
-  - Handsaw
-  - WoodChop
-  - VehicleEngine
-  - Generator
-  - Speaking
+# class_filter:
+#   - Fire
+#   - Thunderstorm
+#   - Silence
+#   - Speaking
+#   - BirdChirping
 
-cv_folds: 5
+cv_folds: 0
 
-features_test: data/processed/fsc22_classical_lean_val
+features_test: data/processed/fsc22_melspec_val_2
 
 # mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
 #                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
@@ -105,29 +98,33 @@ runs:
   #     batch_size:   16
   #     learning_rate: 0.003
 
+  # Strided-first-conv CNN — drops peak arena from 3130 KB → ~780 KB at 5s
+  # first_stride=2 replaces MaxPool after block 0, halving the first feature map
   # - model: cnn
-  #   name:  fsc22_12_classes_augmented_cnn_melspec_train
-  #   features_dir: data/processed/fsc22_melspec_augmented_train
-  #   features_test: data/processed/fsc22_melspec_val
+  #   name:  fsc22_nicla_5_classes_cnn_melspec_train
+  #   features_dir:  data/processed/fsc22_melspec_augmented_train_2
+  #   features_test: data/processed/fsc22_melspec_val_2
   #   params:
-  #     filters:    32
-  #     n_blocks:   3
-  #     dropout:    0.2
-  #     epochs:     100
-  #     batch_size: 16
-  #     learning_rate: 0.0014
+  #     filters:       [16,16,16]
+  #     n_blocks:      3
+  #     first_stride:  4
+  #     second_stride: 2
+  #     dropout:       0.155
+  #     epochs:        100
+  #     batch_size:    16
+  #     learning_rate: 0.002  
 
-  # Nicla Vision MLP — 92-dim classical features, <5 KB int8 tensor arena
-  - model: mlp
-    name:  fsc22_12_classes_mlp_nicla
-    features_dir:  data/processed/fsc22_classical_nicla_train
-    features_test: data/processed/fsc22_classical_nicla_val
-    params:
-      hidden_units: [128, 64]
-      dropout:      0.2
-      epochs:       100
-      batch_size:   16
-      learning_rate: 0.001
+  # # Nicla Vision MLP — 92-dim classical features, <5 KB int8 tensor arena
+  # - model: mlp
+  #   name:  fsc22_12_classes_mlp_nicla
+  #   features_dir:  data/processed/fsc22_classical_nicla_train
+  #   features_test: data/processed/fsc22_classical_nicla_val
+  #   params:
+  #     hidden_units: [128, 64]
+  #     dropout:      0.2
+  #     epochs:       100
+  #     batch_size:   16
+  #     learning_rate: 0.001
 
   # # Nicla Vision target — 2s input, 16 filters, 2 blocks → ~113KB int8 tensor arena
   # - model: cnn
@@ -183,3 +180,40 @@ runs:
   #     dropout:    0.1
   #     epochs:     50
   #     batch_size: 32
+
+  # ── Knowledge distillation pipeline ────────────────────────────────────────
+  # Step 1: fine-tune EfficientNet-B0 as teacher (~29 MB, best accuracy)
+  # Step 2: train tiny CNN student with soft labels from the teacher (<200 KB)
+  #
+  # Run Step 1 first, then uncomment Step 2 pointing at the saved teacher.
+
+  # Step 1 — EfficientNet-B0 teacher
+  - model: efficientnet_teacher
+    name:  fsc22_nicla_27_classes_efficientnet_teacher
+    features_dir:  data/processed/fsc22_melspec_augmented_train_2
+    features_test: data/processed/fsc22_melspec_val_2
+    params:
+      warmup_epochs:       10    # frozen backbone
+      unfreeze_layers:     20    # top N backbone layers to unfreeze in phase 2
+      fine_tune_lr_factor: 0.1   # LR for phase 2 = learning_rate * this
+      target_h:            128   # resize target (≥32; 128 is a good balance)
+      target_w:            128
+      dropout:             0.3
+      epochs:              100    # total (warmup + fine-tune)
+      batch_size:          16
+      learning_rate:       0.001
+
+  # Step 2 — tiny CNN student distilled from the teacher above
+  # - model: distillation_cnn
+  #   name:  fsc22_nicla_27_classes_distil_cnn
+  #   features_dir:  data/processed/fsc22_melspec_augmented_train_2
+  #   features_test: data/processed/fsc22_melspec_val_2
+  #   params:
+  #     teacher_model_path: data/models/fsc22_nicla_27_classes_efficientnet_teacher/model.keras
+  #     filters:            [16, 16, 16]
+  #     temperature:        4.0
+  #     alpha:              0.7
+  #     dropout:            0.2
+  #     epochs:             100
+  #     batch_size:         16
+  #     learning_rate:      0.001
