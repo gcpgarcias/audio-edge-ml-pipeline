@@ -9,7 +9,7 @@
 # Required per-experiment keys: extractor, loader
 # (may be supplied at the top level and inherited).
 
-dataset: data/raw/fsc22_augmented_2
+dataset: data/raw/fsc22_augmented_6
 split:   ~        # augmented dir has no split subfolders — classes sit at root level
 
 # ── Experiments ────────────────────────────────────────────────────────────
@@ -57,6 +57,30 @@ experiments:
   #       - zcr
   #       - rms
 
+  - name:      fsc22_melspec_augmented_train_6
+    extractor: audio_mel_spec
+    loader:    audio_folder
+    dataset:   data/raw/fsc22_augmented_6
+    split:     ~
+    extractor_params:
+      duration:    5.0
+      n_mels:      40
+      sample_rate: 16000
+      n_fft:       512
+      hop_length:  160
+
+  # - name:      fsc22_melspec_val_3
+  #   extractor: audio_mel_spec
+  #   loader:    fsc22
+  #   dataset:   data/raw/fsc22
+  #   split:     validation
+  #   extractor_params:
+  #     duration:    5.0
+  #     n_mels:      40
+  #     sample_rate: 16000
+  #     n_fft:       512
+  #     hop_length:  160
+
   # - name:      fsc22_melspec_augmented_train_2
   #   extractor: audio_mel_spec
   #   loader:    audio_folder
@@ -65,13 +89,13 @@ experiments:
   #     duration: 5.0   # pad/trim to fixed length so all spectrograms share the same T
 
   # Validation set matching fsc22_melspec_augmented_train_2 (same duration, fsc22 raw val split)
-  - name:      fsc22_melspec_val_2
-    extractor: audio_mel_spec
-    loader:    fsc22
-    dataset:   data/raw/fsc22
-    split:     validation
-    extractor_params:
-      duration: 5.0
+  # - name:      fsc22_melspec_val_2
+  #   extractor: audio_mel_spec
+  #   loader:    fsc22
+  #   dataset:   data/raw/fsc22
+  #   split:     validation
+  #   extractor_params:
+  #     duration: 5.0
 
   # Nicla-friendly classical vector: MFCC (80) + 4 spectral (8) + ZCR (2) + RMS (2) = 92 dims
   # sr=16000 matches Nicla PDM mic; n_fft=512, n_mels=40 → mel_fb=(40,257)=40KB fits Nicla heap

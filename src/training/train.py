@@ -441,8 +441,9 @@ def main(argv: Optional[list[str]] = None) -> None:
         experiments_dir.mkdir(parents=True, exist_ok=True)
         safe_name = cfg.experiment.replace("/", "_").replace(" ", "_")
         archive_path = experiments_dir / f"{safe_name}.yaml"
-        shutil.copy2(args.config, archive_path)
-        logger.info("Config archived → %s", archive_path)
+        if Path(args.config).resolve() != archive_path.resolve():
+            shutil.copy2(args.config, archive_path)
+            logger.info("Config archived → %s", archive_path)
         for run in runs:
             try:
                 _run_one(run, cfg.experiment, cfg.mlflow_uri,

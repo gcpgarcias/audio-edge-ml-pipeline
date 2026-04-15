@@ -12,15 +12,22 @@
 
 features_dir:      data/processed/fsc22_classical_augmented_train
 output_dir:        data/models
-experiment:        fsc22-nicla-3-classes
+experiment:        fsc22-nicla-10-classes-cnn-16x64-32mel
 class_filter:
+  - Fire
+  - Thunderstorm
   - Silence
   - Speaking
   - BirdChirping
+  - Chainsaw
+  - Handsaw
+  - WoodChop
+  - VehicleEngine
+  - Gunshot
 
 cv_folds: 0
 
-features_test: data/processed/fsc22_melspec_val_3
+features_test: data/processed/fsc22_melspec_val_32mel
 
 # mlflow_uri: null    # null → env MLFLOW_TRACKING_URI or local "mlruns/"
 #                     # Docker stack: export MLFLOW_TRACKING_URI=http://localhost:5000
@@ -203,14 +210,14 @@ runs:
 
   # [16,64,64] on 32-mel features — top 8 bins dropped to match Nicla PDM mic
   - model: cnn
-    name:  fsc22_3_classes_cnn
-    features_dir:  data/processed/fsc22_melspec_augmented_train_6
-    features_test: data/processed/fsc22_melspec_val_3
+    name:  fsc22_nicla_10_classes_cnn_16x64_32mel
+    features_dir:  data/processed/fsc22_melspec_augmented_train_32mel
+    features_test: data/processed/fsc22_melspec_val_32mel
     params:
       filters:       [16, 64, 64]
       first_stride:  4
       second_stride: 2
-      dropout:       0.255
+      dropout:       0.25
       epochs:        100
       batch_size:         16
-      learning_rate:      0.0011
+      learning_rate:      0.001

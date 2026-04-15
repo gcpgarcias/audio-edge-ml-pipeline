@@ -717,12 +717,16 @@ int model_run(const float *input, float *scores, float *arena) {{
 
     def _gen_features(self, src: Path, inc: Path) -> None:
         from .model_to_c import _FEATURES_H, _FEATURES_C
+        n_frames  = self.fp.get("n_frames") or (
+                    1 + int(round(self.fp["duration"] * self.fp["sample_rate"])) // self.fp["hop_length"])
+        n_samples = (n_frames - 1) * self.fp["hop_length"]
         header = _FEATURES_H.format(
             sample_rate = self.fp["sample_rate"],
             n_fft       = self.fp["n_fft"],
             hop_length  = self.fp["hop_length"],
             n_mels      = self.fp["n_mels"],
-            duration    = self.fp["duration"],
+            n_samples   = n_samples,
+            n_frames    = n_frames,
         )
         (inc / "features.h").write_text(header)
         (src / "features.c").write_text(_FEATURES_C)

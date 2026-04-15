@@ -589,26 +589,51 @@ class TransformerTrainer(KerasTrainer):
 # Serialisable preprocessing layer for EfficientNetTeacherTrainer
 # ---------------------------------------------------------------------------
 
+import keras as _keras
+
+@_keras.saving.register_keras_serializable(package="src.training.models.deep")
+class PrepRGBResize(_keras.layers.Layer):
+    """Serialisable Keras layer: mono → RGB, pad-to-square, resize."""
+
+    def __init__(self, target_h: int, target_w: int, **kwargs):
+        super().__init__(**kwargs)
+        self.target_h = target_h
+        self.target_w = target_w
+
+    def call(self, x):
+        import tensorflow as tf
+        # Mono → RGB
+        if x.shape[-1] != 3:
+            x = tf.repeat(x, 3, axis=-1)
+
+        # Pad shorter axis to make the spectrogram square, then resize.
+        h = tf.shape(x)[1]
+        w = tf.shape(x)[2]
+        max_side = tf.maximum(h, w)
+
+        pad_h = max_side - h
+        pad_w = max_side - w
+        pad_top    = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left   = pad_w // 2
+        pad_right  = pad_w - pad_left
+
+        x = tf.pad(
+            x,
+            [[0, 0], [pad_top, pad_bottom], [pad_left, pad_right], [0, 0]],
+            mode="CONSTANT",
+            constant_values=0,
+        )
+        return tf.image.resize(x, (self.target_h, self.target_w))
+
+    def get_config(self):
+        cfg = super().get_config()
+        cfg.update({"target_h": self.target_h, "target_w": self.target_w})
+        return cfg
+
+
 def _make_prep_layer(target_h: int, target_w: int):
-    """Return a serialisable Keras layer that stacks mono → RGB and resizes."""
-    import tensorflow as tf
-
-    class PrepRGBResize(tf.keras.layers.Layer):
-        def __init__(self, target_h: int, target_w: int, **kwargs):
-            super().__init__(**kwargs)
-            self.target_h = target_h
-            self.target_w = target_w
-
-        def call(self, x):
-            if x.shape[-1] != 3:
-                x = tf.repeat(x, 3, axis=-1)
-            return tf.image.resize(x, (self.target_h, self.target_w))
-
-        def get_config(self):
-            cfg = super().get_config()
-            cfg.update({"target_h": self.target_h, "target_w": self.target_w})
-            return cfg
-
+    """Return a PrepRGBResize layer instance."""
     return PrepRGBResize(target_h, target_w, name="prep_rgb_resize")
 
 
@@ -995,7 +1020,10 @@ class DistillationCNNTrainer(KerasTrainer):
 
         # ── Load teacher (frozen) ─────────────────────────────────────
         logger.info("Loading teacher model from %s", self.teacher_model_path)
-        teacher = tf.keras.models.load_model(self.teacher_model_path)
+        teacher = tf.keras.models.load_model(
+            self.teacher_model_path,
+            custom_objects={"PrepRGBResize": PrepRGBResize},
+        )
         teacher.trainable = False
 
         # Pre-compute soft targets over training set
@@ -1167,23 +1195,18 @@ class DistillationCNNTrainer(KerasTrainer):
 
     @staticmethod
     def _get_logits(teacher, X: np.ndarray) -> np.ndarray:
-        """Extract pre-softmax logits from the teacher.
+        """Return pseudo-logits from the teacher suitable for temperature scaling.
 
-        If the last layer is a softmax activation the penultimate layer's
-        output is used instead; otherwise the raw output is returned.
+        Rather than attempting to crack open the teacher's graph to find the
+        pre-softmax layer (which breaks when the teacher is a sub-model like
+        EfficientNet), we use ``log(p + ε)`` as pseudo-logits.  This is
+        mathematically equivalent for distillation: ``softmax(log(p)/T)``
+        produces the same temperature-scaled distribution as
+        ``softmax(z/T)`` because the log-sum-exp constant cancels in softmax.
+        Works for any teacher architecture without introspection.
         """
-        import tensorflow as tf
-
-        last = teacher.layers[-1]
-        if (
-            isinstance(last, tf.keras.layers.Activation) and last.get_config().get("activation") == "softmax"
-            or isinstance(last, tf.keras.layers.Dense) and last.get_config().get("activation") == "softmax"
-            or isinstance(last, tf.keras.layers.Softmax)
-        ):
-            logit_model = tf.keras.Model(teacher.input, teacher.layers[-2].output)
-        else:
-            logit_model = teacher
-        return logit_model.predict(X, verbose=0)
+        probs = teacher.predict(X, verbose=0)          # (N, C) in [0, 1]
+        return np.log(probs + 1e-8)                    # (N, C) pseudo-logits
 
     @classmethod
     def load(cls, path: Path) -> "DistillationCNNTrainer":

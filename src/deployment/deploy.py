@@ -122,10 +122,11 @@ def _load_feature_params(args) -> dict:
             if len(fs) >= 2:
                 base["n_mels"]     = fs[0]
                 base["n_features"] = fs[0]
-                # Derive duration from n_frames, hop_length, sample_rate
+                # Derive n_samples from n_frames using center=True inverse:
+                # n_frames = 1 + n_samples // hop  →  n_samples = (n_frames - 1) * hop
                 n_frames = fs[1]
-                base["duration"] = round(
-                    (n_frames * base["hop_length"]) / base["sample_rate"], 2)
+                n_samples = (n_frames - 1) * base["hop_length"]
+                base["duration"] = round(n_samples / base["sample_rate"], 4)
 
     # CLI overrides (highest priority)
     if args.sample_rate is not None: base["sample_rate"] = args.sample_rate

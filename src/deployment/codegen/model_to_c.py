@@ -366,10 +366,24 @@ static void _pdm_cb() {{
 void audio_init() {{
     PDM.onReceive(_pdm_cb);
     PDM.begin(1, AUDIO_SAMPLE_RATE);
-    PDM.setGain(64);   // match OpenMV default (~24 dB); raise if PCM peaks < ~1000
+    PDM.setGain(12);   // 16 too quiet — interference dominates in silence; 32 is a better floor
 }}
 
+/* Discard this many samples at the start of every recording to flush the
+   PDM FIFO settling transient (~500 ms at 16 kHz = 8000 samples).        */
+#define AUDIO_WARMUP_SAMPLES 16384  /* ~1s at 16kHz — Nicla PDM needs longer settling */
+
+static int16_t _warmup_buf[AUDIO_WARMUP_SAMPLES];
+
 void audio_record(int16_t *buf, int n_samples) {{
+    /* Pre-roll: drain PDM FIFO warmup into a throwaway buffer */
+    _pdm_buf  = _warmup_buf;
+    _pdm_pos  = 0;
+    _pdm_done = false;
+    _pdm_n    = AUDIO_WARMUP_SAMPLES;
+    while (!_pdm_done) {{ /* spin */ }}
+
+    /* Real recording */
     _pdm_buf  = buf;
     _pdm_pos  = 0;
     _pdm_done = false;
@@ -444,10 +458,10 @@ _FEATURES_H = """
 #define FEAT_N_FFT        {n_fft}
 #define FEAT_HOP          {hop_length}
 #define FEAT_N_MELS       {n_mels}
-#define FEAT_DURATION_S   {duration}
-#define FEAT_N_SAMPLES    ((int)(FEAT_SAMPLE_RATE * FEAT_DURATION_S))
-/* center=True: n_frames = 1 + n_samples/hop  (matches librosa default) */
-#define FEAT_N_FRAMES     (1 + FEAT_N_SAMPLES / FEAT_HOP)
+/* Literal counts computed at codegen time — avoids float-multiply rounding.
+   n_samples = (n_frames - 1) * hop  (center=True inverse of librosa default) */
+#define FEAT_N_SAMPLES    {n_samples}
+#define FEAT_N_FRAMES     {n_frames}
 /* Output: float[FEAT_N_MELS][FEAT_N_FRAMES] — log-mel spectrogram (NHWC with C=1) */
 #define FEAT_DIM          (FEAT_N_MELS * FEAT_N_FRAMES)
 
@@ -560,20 +574,29 @@ void features_extract(const int16_t *pcm, int n_samples, float *out) {
         for (int m = 0; m < FEAT_N_MELS; m++)
             out[m * FEAT_N_FRAMES + fi] = 0.0f;
 
-    /* Convert to dB relative to max (librosa.power_to_db(ref=np.max, top_db=80))
-       then min-max normalize to [0, 1] (_normalize() in the Python extractor).
-       Since top_db=80 the range after clipping is always [-80, 0], so
-       normalization reduces to (db + 80) / 80. */
+    /* Convert to dB relative to max (librosa.power_to_db(ref=np.max), no top_db clip),
+       then true min-max normalize to [0, 1] — matching _normalize() in the Python
+       extractor (src/preprocessing/feature_extraction/audio/deep.py):
+           lo, hi = x.min(), x.max()
+           return (x - lo) / (hi - lo + eps)                                        */
     int total = FEAT_N_MELS * FEAT_N_FRAMES;
     float max_power = 1e-10f;
     for (int i = 0; i < total; i++)
         if (out[i] > max_power) max_power = out[i];
 
-    for (int i = 0; i < total; i++) {
-        float db = 10.0f * log10f(out[i] / max_power + 1e-10f);
-        if (db < -80.0f) db = -80.0f;
-        out[i] = (db + 80.0f) / 80.0f;
+    /* power → dB, no clipping */
+    for (int i = 0; i < total; i++)
+        out[i] = 10.0f * log10f(out[i] / max_power + 1e-10f);
+
+    /* true min-max normalize */
+    float db_min = out[0], db_max = out[0];
+    for (int i = 1; i < total; i++) {
+        if (out[i] < db_min) db_min = out[i];
+        if (out[i] > db_max) db_max = out[i];
     }
+    float range = db_max - db_min + 1e-8f;
+    for (int i = 0; i < total; i++)
+        out[i] = (out[i] - db_min) / range;
 }
 """
 
@@ -602,18 +625,34 @@ _MAIN_CPP = """
 
 /* Shared scratch — large enough for whichever phase needs more RAM.
    Declared as float to guarantee 4-byte alignment for arena float* casts.
-   PCM int16 recording reinterprets the same memory as int16_t*.            */
-#define SHARED_BUF_FLOATS  ((MODEL_ARENA_BYTES > (int)(FEAT_N_SAMPLES * 2) \
-                             ? MODEL_ARENA_BYTES : (int)(FEAT_N_SAMPLES * 2) \
-                            ) / 4 + 1)
+   PCM int16 recording reinterprets the same memory as int16_t*.
+   feat_buf starts at offset FEAT_N_SAMPLES/2 floats and is FEAT_DIM floats
+   long, so the buffer must cover at least that tail even when the arena is
+   smaller (e.g. compact models with a tiny activation footprint).          */
+#define _PCM_FLOATS   (FEAT_N_SAMPLES / 2)
+#define _FEAT_END     (_PCM_FLOATS + FEAT_DIM)
+#define _ARENA_FLOATS (MODEL_ARENA_BYTES / 4)
+#define SHARED_BUF_FLOATS  ((_FEAT_END > _ARENA_FLOATS ? _FEAT_END : _ARENA_FLOATS) + 1)
 static float _shared_buf[SHARED_BUF_FLOATS];
 
-/* feat_buf aliases _shared_buf — features_extract writes here, then
-   model_run immediately copies it into buf_a (also _shared_buf start).    */
-#define feat_buf  ((float *)_shared_buf)
+/* feat_buf is placed AFTER the PCM region to avoid in-place aliasing:
+   features_extract writes in stride order (out[mel*N_FRAMES+fi]), which
+   would overwrite PCM samples still being read if both start at [0].
+   PCM occupies _shared_buf[0 .. FEAT_N_SAMPLES/2-1] as float (int16*2=4B).
+   feat_buf follows immediately; model_run arena reuses from [0] once PCM
+   is no longer needed.                                                     */
+#define feat_buf  ((float *)_shared_buf + FEAT_N_SAMPLES / 2)
 static float   scores[MODEL_N_CLASSES];
 
 static const char *labels[MODEL_N_CLASSES] = {{ {label_list} }};
+
+/* Set FEAT_DUMP_MODE to 1 to stream raw mel spectrogram over serial instead
+   of running the model.  Use tools/receive_mel.py to capture and compare.  */
+#define FEAT_DUMP_MODE 0
+
+/* Set PCM_DUMP_MODE to 1 to stream raw int16 PCM over serial (after DC
+   removal and notch filter).  Use tools/receive_wav.py to save as .wav. */
+#define PCM_DUMP_MODE 0
 
 void setup() {{
     Serial.begin(115200);
@@ -627,28 +666,116 @@ void setup() {{
 void loop() {{
     int16_t *pcm_buf = (int16_t *)_shared_buf;
 
-    Serial.print("Free stack approx: ");
-    Serial.println((uint32_t)&pcm_buf, HEX);
+    {{
+        extern uint32_t __StackTop;
+        uint32_t sp;
+        __asm volatile ("mov %0, sp" : "=r"(sp));
+        Serial.print("Free stack approx: ");
+        Serial.print((uint32_t)&__StackTop - sp);
+        Serial.println(" bytes");
+    }}
 
     Serial.println("Recording ...");
     audio_record(pcm_buf, FEAT_N_SAMPLES);
-    Serial.println("Audio done.");
 
+    /* PCM diagnostics */
+    {{
+        int16_t pcm_min = pcm_buf[0], pcm_max = pcm_buf[0];
+        for (int i = 1; i < FEAT_N_SAMPLES; i++) {{
+            if (pcm_buf[i] < pcm_min) pcm_min = pcm_buf[i];
+            if (pcm_buf[i] > pcm_max) pcm_max = pcm_buf[i];
+        }}
+        Serial.print("PCM min="); Serial.print(pcm_min);
+        Serial.print(" max=");    Serial.println(pcm_max);
+
+        int32_t sum = 0;
+        for (int i = 0; i < FEAT_N_SAMPLES; i++) sum += pcm_buf[i];
+        int16_t dc = (int16_t)(sum / FEAT_N_SAMPLES);
+        for (int i = 0; i < FEAT_N_SAMPLES; i++) pcm_buf[i] -= dc;
+        int16_t ac_min = pcm_buf[0], ac_max = pcm_buf[0];
+        for (int i = 1; i < FEAT_N_SAMPLES; i++) {{
+            if (pcm_buf[i] < ac_min) ac_min = pcm_buf[i];
+            if (pcm_buf[i] > ac_max) ac_max = pcm_buf[i];
+        }}
+        Serial.print("DC="); Serial.print(dc);
+        Serial.print("  AC min="); Serial.print(ac_min);
+        Serial.print(" max="); Serial.println(ac_max);
+    }}
+
+    /* Biquad notch at 4 kHz (sr=16000, Q=8) — removes PDM clock artifact.
+       Coefficients pre-computed: w0=pi/2, b1=a1=0 (exact null at Nyquist/2).
+       Direct Form I: y[n] = b0*x[n] + b1*x[n-1] + b2*x[n-2]
+                            - a1*y[n-1] - a2*y[n-2]               */
+    {{
+        const float b0 =  0.94117647f, b1 = 0.0f, b2 = 0.94117647f;
+        const float                    a1 = 0.0f, a2 = 0.88235294f;
+        float x1 = 0.0f, x2 = 0.0f, y1 = 0.0f, y2 = 0.0f;
+        for (int i = 0; i < FEAT_N_SAMPLES; i++) {{
+            float x0 = (float)pcm_buf[i];
+            float y0 = b0*x0 + b1*x1 + b2*x2 - a1*y1 - a2*y2;
+            x2 = x1; x1 = x0;
+            y2 = y1; y1 = y0;
+            if (y0 >  32767.0f) y0 =  32767.0f;
+            if (y0 < -32768.0f) y0 = -32768.0f;
+            pcm_buf[i] = (int16_t)y0;
+        }}
+    }}
+
+#if PCM_DUMP_MODE
+    {{
+        const uint32_t n_samples = FEAT_N_SAMPLES;
+        const uint8_t magic_start[4] = {{0xCA, 0xFE, 0xBA, 0xBE}};
+        const uint8_t magic_end[4]   = {{0xDE, 0xAD, 0xBE, 0xEF}};
+        Serial.write(magic_start, 4);
+        Serial.write((uint8_t *)&n_samples, 4);
+        Serial.write((uint8_t *)pcm_buf, n_samples * 2);
+        Serial.write(magic_end, 4);
+        Serial.println("PCM_DUMP_DONE");
+        delay(2000);
+    }}
+#else
     Serial.println("Extracting features ...");
     features_extract(pcm_buf, FEAT_N_SAMPLES, feat_buf);
     Serial.println("Features done.");
 
+#if FEAT_DUMP_MODE
+    /* Binary frame: magic(4) | n_floats(4) | floats(n*4) | magic_end(4)
+       Received by tools/receive_mel.py                                     */
+    const uint32_t n_floats = FEAT_N_MELS * FEAT_N_FRAMES;
+    const uint8_t magic_start[4] = {{0xFE, 0xED, 0x12, 0x34}};
+    const uint8_t magic_end[4]   = {{0xDE, 0xAD, 0x56, 0x78}};
+    Serial.write(magic_start, 4);
+    Serial.write((uint8_t *)&n_floats, 4);
+    Serial.write((uint8_t *)feat_buf, n_floats * 4);
+    Serial.write(magic_end, 4);
+    Serial.println("DUMP_DONE");
+    delay(2000);
+#else
     /* pcm_buf alias is no longer needed — arena reuses _shared_buf */
     Serial.println("Running model ...");
     int cls = model_run(feat_buf, scores, _shared_buf);
     Serial.println("Model done.");
-    Serial.print("Result: ");
-    Serial.print(labels[cls]);
-    Serial.print("  (score=");
-    Serial.print(scores[cls], 3);
-    Serial.println(")");
+
+    /* Top-3 results */
+    int top[3] = {{cls, -1, -1}};
+    for (int t = 1; t < 3; t++) {{
+        float best = -1.0f;
+        for (int i = 0; i < MODEL_N_CLASSES; i++) {{
+            bool used = false;
+            for (int u = 0; u < t; u++) if (top[u] == i) {{ used = true; break; }}
+            if (!used && scores[i] > best) {{ best = scores[i]; top[t] = i; }}
+        }}
+    }}
+    Serial.println("--- Top 3 ---");
+    for (int t = 0; t < 3; t++) {{
+        Serial.print("  "); Serial.print(t + 1);
+        Serial.print(". "); Serial.print(labels[top[t]]);
+        Serial.print(": score="); Serial.println(scores[top[t]], 3);
+    }}
 
     delay(500);
+#endif
+#endif  /* PCM_DUMP_MODE */
 }}
 """
 
@@ -1154,12 +1281,18 @@ int model_run(const float *input, float *scores, float *arena) {{
     # ------------------------------------------------------------------
 
     def _gen_features(self, src: Path, inc: Path) -> None:
+        n_frames  = self.fp["n_features"] if "n_features" in self.fp else (
+            1 + (self.fp["n_frames"] if "n_frames" in self.fp else
+                 int(round(self.fp["duration"] * self.fp["sample_rate"])) // self.fp["hop_length"])
+        )
+        n_samples = (n_frames - 1) * self.fp["hop_length"]
         header = _FEATURES_H.format(
             sample_rate = self.fp["sample_rate"],
             n_fft       = self.fp["n_fft"],
             hop_length  = self.fp["hop_length"],
             n_mels      = self.fp["n_mels"],
-            duration    = self.fp["duration"],
+            n_samples   = n_samples,
+            n_frames    = n_frames,
         )
         (inc / "features.h").write_text(header)
         (src / "features.c").write_text(_FEATURES_C)

@@ -12,14 +12,16 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-nicla-3-classes-tuning
+experiment:  fsc22-nicla-27-classes-tuning
 mlflow_uri:  mlruns/
-class_filter:
-  - Silence
-  - Speaking
-  - BirdChirping
-  
-# features_test: data/processed/fsc22_melspec_val_2
+# class_filter:
+#   - Fire
+#   - Thunderstorm
+#   - Silence
+#   - Speaking
+#   - BirdChirping
+
+features_test: data/processed/fsc22_melspec_val_2
 
 # Classical-specific defaults
 cv:      5
@@ -129,9 +131,9 @@ runs:
   #     learning_rate: {type: loguniform,  low: 0.00005, high: 0.01}
 
   - model:          cnn
-    name:           fsc22_nicla_3_classes_cnn_sweep
-    features_dir:   data/processed/fsc22_melspec_augmented_train_3
-    features_test:  data/processed/fsc22_melspec_val_3
+    name:           fsc22_nicla_27_classes_cnn_melspec_sweep
+    features_dir:   data/processed/fsc22_melspec_augmented_train_2
+    features_test:  data/processed/fsc22_melspec_val_2
     params:
       first_stride: 4     # strided first conv
       second_stride: 2    # strided second conv — keeps peak arena ~157 KB, fits 512 KB AXI SRAM
