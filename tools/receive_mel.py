@@ -16,6 +16,7 @@ Captured .npy files are saved under data/debug/<experiment>/mel/.
 """
 
 import argparse
+import glob
 import struct
 import sys
 from datetime import datetime
@@ -43,7 +44,13 @@ def recv_frame(ser: serial.Serial) -> np.ndarray:
             while b"\n" in buf:
                 line, buf = buf.split(b"\n", 1)
                 try:
-                    print("[device]", line.decode(errors="replace").strip())
+                    text = line.decode(errors="replace").strip()
+                    if text:
+                        print("[device]", text)
+                    if text == "READY":
+                        ser.write(b'R')
+                        ser.flush()
+                        print("[host] sent trigger 'R'")
                 except Exception:
                     pass
             buf = buf[-4:]          # keep tail in case magic spans reads
@@ -157,8 +164,8 @@ def plot_comparison(device_feat: np.ndarray, train_feat: np.ndarray,
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port",       default="/dev/cu.usbmodem11201",
-                    help="Serial port (default: /dev/cu.usbmodem11201)")
+    ap.add_argument("--port",       default=None,
+                    help="Serial port (default: auto-detect /dev/cu.usbmodem*)")
     ap.add_argument("--baud",       type=int, default=115200)
     ap.add_argument("--features",   default="data/processed/fsc22_melspec_val_2",
                     help="Path to processed feature set directory")
@@ -182,8 +189,17 @@ def main():
         device_feat = np.load(args.load)
         print(f"Loaded device features from {args.load}: shape={device_feat.shape}")
     else:
-        ser = serial.Serial(args.port, args.baud, timeout=30)
-        print(f"Opened {args.port} @ {args.baud}")
+        port = args.port
+        if port is None:
+            matches = sorted(glob.glob("/dev/cu.usbmodem*"))
+            if not matches:
+                print("ERROR: no /dev/cu.usbmodem* device found. Is the Nicla plugged in?")
+                sys.exit(1)
+            port = matches[0]
+            if len(matches) > 1:
+                print(f"Multiple ports found {matches} — using {port}")
+        ser = serial.Serial(port, args.baud, timeout=30)
+        print(f"Opened {port} @ {args.baud}")
         device_feat = recv_frame(ser)
         ser.close()
         # Save for offline reuse under data/debug/<experiment>/mel/

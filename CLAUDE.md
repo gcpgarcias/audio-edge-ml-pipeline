@@ -73,7 +73,7 @@ cd deploy/nicla_cnn && pio run --target upload && \
   - `first_stride=4`: Conv1 out = (16,10,126) = 79 KB → arena ~157 KB → **fits** ✓
 - **Custom linker script** (`nicla_vision.ld`) generated automatically — keeps stack at
   top of physical 512 KB (do not set LENGTH > 512K or stack lands in non-existent RAM).
-- **PDM gain**: `PDM.setGain(32)` in `audio_init()`. Default gain is near-zero.
+- **PDM gain**: `PDM.setGain(12)` in `audio_init()`. Default gain is near-zero.
 - **Feature extraction must match librosa exactly**:
   - `librosa.power_to_db(mel, ref=np.max)` + `_normalize()` → values in `[0, 1]`
   - `center=True` (librosa default): `n_frames = 1 + n_samples // hop`; frame window

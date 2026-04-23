@@ -346,19 +346,31 @@ _AUDIO_CPP_PDM_STM32 = """
 #include "audio.h"
 #include <PDM.h>
 
-static volatile int16_t *_pdm_buf;
-static volatile int      _pdm_pos;
-static volatile bool     _pdm_done;
-static int               _pdm_n;
+static volatile int16_t *_pdm_buf  = NULL;
+static volatile int      _pdm_pos  = 0;
+static volatile bool     _pdm_done = false;
+static volatile int      _pdm_n    = 0;
+
+static int16_t _drain[64];
 
 static void _pdm_cb() {{
     int available = PDM.available();
-    while (available > 0 && !_pdm_done) {{
+    if (_pdm_buf == NULL || _pdm_n == 0) {{
+        while (available >= 2) {{
+            int n = available / 2;
+            if (n > 64) n = 64;
+            PDM.read(_drain, n * 2);
+            available -= n * 2;
+        }}
+        return;
+    }}
+    if (_pdm_done) return;
+    while (available > 0) {{
         int n = available / 2;
         if (_pdm_pos + n > _pdm_n) n = _pdm_n - _pdm_pos;
         PDM.read((int16_t*)_pdm_buf + _pdm_pos, n * 2);
         _pdm_pos += n;
-        if (_pdm_pos >= _pdm_n) _pdm_done = true;
+        if (_pdm_pos >= _pdm_n) {{ _pdm_done = true; return; }}
         available = PDM.available();
     }}
 }}
@@ -366,29 +378,28 @@ static void _pdm_cb() {{
 void audio_init() {{
     PDM.onReceive(_pdm_cb);
     PDM.begin(1, AUDIO_SAMPLE_RATE);
-    PDM.setGain(12);   // 16 too quiet — interference dominates in silence; 32 is a better floor
+    PDM.setGain(12);
 }}
 
-/* Discard this many samples at the start of every recording to flush the
-   PDM FIFO settling transient (~500 ms at 16 kHz = 8000 samples).        */
-#define AUDIO_WARMUP_SAMPLES 16384  /* ~1s at 16kHz — Nicla PDM needs longer settling */
+#define AUDIO_WARMUP_SAMPLES 4096
 
 static int16_t _warmup_buf[AUDIO_WARMUP_SAMPLES];
 
 void audio_record(int16_t *buf, int n_samples) {{
-    /* Pre-roll: drain PDM FIFO warmup into a throwaway buffer */
     _pdm_buf  = _warmup_buf;
     _pdm_pos  = 0;
-    _pdm_done = false;
     _pdm_n    = AUDIO_WARMUP_SAMPLES;
+    _pdm_done = false;
     while (!_pdm_done) {{ /* spin */ }}
 
-    /* Real recording */
     _pdm_buf  = buf;
     _pdm_pos  = 0;
-    _pdm_done = false;
     _pdm_n    = n_samples;
+    _pdm_done = false;
     while (!_pdm_done) {{ /* spin */ }}
+
+    _pdm_buf = NULL;
+    _pdm_n   = 0;
 }}
 """
 
@@ -675,6 +686,14 @@ void loop() {{
         Serial.println(" bytes");
     }}
 
+#if PCM_DUMP_MODE
+    /* Wait for 'R' trigger from host before recording.
+       tools/record_dataset.py sends 'R', then immediately starts audio playback.
+       The device starts capturing at the same moment — no manual sync needed. */
+    do {{ Serial.println("READY"); delay(200); }} while (!Serial.available());
+    if (Serial.read() != 'R') return;   // unexpected byte — skip this cycle
+#endif
+
     Serial.println("Recording ...");
     audio_record(pcm_buf, FEAT_N_SAMPLES);
 
@@ -731,7 +750,6 @@ void loop() {{
         Serial.write((uint8_t *)pcm_buf, n_samples * 2);
         Serial.write(magic_end, 4);
         Serial.println("PCM_DUMP_DONE");
-        delay(2000);
     }}
 #else
     Serial.println("Extracting features ...");

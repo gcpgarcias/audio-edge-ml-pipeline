@@ -17,6 +17,7 @@ Controls
 """
 
 import argparse
+import glob
 import struct
 import sys
 import wave
@@ -46,6 +47,10 @@ def recv_pcm(ser: serial.Serial) -> bytes:
                     text = line.decode(errors="replace").strip()
                     if text:
                         print("[device]", text)
+                    if text == "READY":
+                        ser.write(b'R')
+                        ser.flush()
+                        print("[host] sent trigger 'R'")
                 except Exception:
                     pass
             buf = buf[-8:]  # keep enough tail for magic to span reads
@@ -97,8 +102,8 @@ def save_wav(pcm_bytes: bytes, path: Path):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--port",       default="/dev/cu.usbmodem11201",
-                    help="Serial port (default: /dev/cu.usbmodem11201)")
+    ap.add_argument("--port",       default=None,
+                    help="Serial port (default: auto-detect /dev/cu.usbmodem*)")
     ap.add_argument("--baud",       type=int, default=115200)
     ap.add_argument("--out",        default=None,
                     help="Output .wav path. If omitted, auto-named with timestamp.")
@@ -112,8 +117,18 @@ def main():
     out_dir = Path("data/debug") / args.experiment / "wav"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    ser = serial.Serial(args.port, args.baud, timeout=30)
-    print(f"Opened {args.port} @ {args.baud}")
+    port = args.port
+    if port is None:
+        matches = sorted(glob.glob("/dev/cu.usbmodem*"))
+        if not matches:
+            print("ERROR: no /dev/cu.usbmodem* device found. Is the Nicla plugged in?")
+            sys.exit(1)
+        port = matches[0]
+        if len(matches) > 1:
+            print(f"Multiple ports found {matches} — using {port}")
+
+    ser = serial.Serial(port, args.baud, timeout=30)
+    print(f"Opened {port} @ {args.baud}")
 
     i = 0
     try:
