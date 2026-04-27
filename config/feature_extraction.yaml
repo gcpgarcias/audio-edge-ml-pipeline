@@ -9,8 +9,8 @@
 # Required per-experiment keys: extractor, loader
 # (may be supplied at the top level and inherited).
 
-dataset: data/raw/fsc22_augmented_6
-split:   ~        # augmented dir has no split subfolders — classes sit at root level
+dataset: data/raw/fsc22_device_augmented
+# split:   ~        # augmented dir has no split subfolders — classes sit at root level
 
 # ── Experiments ────────────────────────────────────────────────────────────
 
@@ -57,11 +57,11 @@ experiments:
   #       - zcr
   #       - rms
 
-  - name:      fsc22_melspec_augmented_train_6
-    extractor: audio_mel_spec
-    loader:    audio_folder
-    dataset:   data/raw/fsc22_augmented_6
-    split:     ~
+  - name:           fsc22_device_augmented_melspec_train
+    extractor:      audio_mel_spec
+    loader:         audio_folder
+    dataset:        data/raw/fsc22_device_augmented
+    split:          ""
     extractor_params:
       duration:    5.0
       n_mels:      40
@@ -69,11 +69,12 @@ experiments:
       n_fft:       512
       hop_length:  160
 
-  # - name:      fsc22_melspec_val_3
-  #   extractor: audio_mel_spec
-  #   loader:    fsc22
-  #   dataset:   data/raw/fsc22
-  #   split:     validation
+  # - name:           fsc22_device_melspec_val
+  #   extractor:      audio_mel_spec
+  #   loader:         audio_folder
+  #   dataset:        data/raw/fsc22_device
+  #   manifest:       data/raw/fsc22_device/split_manifest.json
+  #   manifest_split: val
   #   extractor_params:
   #     duration:    5.0
   #     n_mels:      40

@@ -9,17 +9,8 @@ logs all metrics to MLflow.
 
 Usage
 -----
-    # --features is optional when the shortlist was produced by train.py ≥ current
-    # version, which logs features_dir as an MLflow param per candidate.
     python -m src.optimization.optimize \\
         --shortlist       data/models/tuned/shortlist.json \\
-        --output-dir      data/models/optimized \\
-        --experiment      birdeep-optimization
-
-    # Explicit override (or when shortlist lacks features_dir):
-    python -m src.optimization.optimize \\
-        --shortlist       data/models/tuned/shortlist.json \\
-        --features        data/processed/birdeep_classical_train \\
         --output-dir      data/models/optimized \\
         --experiment      birdeep-optimization
 
@@ -29,10 +20,6 @@ Output layout (``output_dir/<experiment>/<model>/``)
     model_dynamic_int8.onnx
     model_static_int8.onnx
     model_float16.onnx
-    model_tflite_fp32.tflite        (Keras only)
-    model_tflite_dynamic.tflite     (Keras only)
-    model_tflite_int8.tflite        (Keras only)
-    model_tflite_float16.tflite     (Keras only)
     optimization_report.json        consumed by Stage 5c select_postopt()
 
 Stage 5c contract
@@ -62,13 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.optimization.quantize import (
     convert_to_onnx,
-    convert_to_tflite_dynamic,
-    convert_to_tflite_float16,
-    convert_to_tflite_fp32,
-    convert_to_tflite_int8,
-    detect_model_type,
     evaluate_onnx,
-    evaluate_tflite,
     find_model_file,
     optimize_dynamic_int8,
     optimize_float16,
@@ -127,8 +108,6 @@ def _optimize_one(
         comparable to the tuning stage.
 
     Returns an optimization_report dict, or None if ONNX conversion failed.
-    TFLite failures are non-fatal — results are omitted from the report but
-    the run continues.
     """
     if X_eval is None:
         X_eval = X
@@ -237,64 +216,7 @@ def _optimize_one(
         best["accuracy"], reference_acc - best["accuracy"],
     )
 
-    # ── 5. TFLite benchmark (Keras models only) ───────────────────────────
-    tflite_modes: dict[str, dict] = {}
-    tflite_best_key: Optional[str] = None
-    tflite_best: Optional[dict]    = None
-
-    if model_path.suffix in (".keras", ".h5"):
-        logger.info("[%s] — TFLite benchmark —", model_name)
-        _tflite_fns = {
-            "tflite_fp32":    lambda: convert_to_tflite_fp32(
-                model_path, model_dir / "model_tflite_fp32.tflite"
-            ),
-            "tflite_dynamic": lambda: convert_to_tflite_dynamic(
-                model_path, model_dir / "model_tflite_dynamic.tflite"
-            ),
-            "tflite_int8":    lambda: convert_to_tflite_int8(
-                model_path, model_dir / "model_tflite_int8.tflite", X
-            ),
-            "tflite_float16": lambda: convert_to_tflite_float16(
-                model_path, model_dir / "model_tflite_float16.tflite"
-            ),
-        }
-        for mode_key, fn in _tflite_fns.items():
-            try:
-                tflite_path = fn()
-                m = evaluate_tflite(tflite_path, X_eval, y_eval)
-                tflite_modes[mode_key] = {
-                    "path":       tflite_path,
-                    "size_kb":    tflite_path.stat().st_size / 1024,
-                    "accuracy":   m["accuracy"],
-                    "latency_ms": m["latency_ms"],
-                }
-                logger.info(
-                    "[%s] %-16s acc=%.4f  latency=%.3f ms  size=%.1f KB",
-                    model_name, mode_key,
-                    m["accuracy"], m["latency_ms"],
-                    tflite_modes[mode_key]["size_kb"],
-                )
-            except Exception as exc:
-                logger.warning("[%s] TFLite '%s' failed (skipping): %s", model_name, mode_key, exc)
-
-        if tflite_modes:
-            tflite_ref_acc = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
-            tflite_eligible = {
-                k: v for k, v in tflite_modes.items()
-                if tflite_ref_acc - v["accuracy"] <= max_accuracy_drop
-            }
-            if not tflite_eligible:
-                tflite_eligible = {min(tflite_modes, key=lambda k: tflite_modes[k]["size_kb"]): None}
-                tflite_eligible = {k: tflite_modes[k] for k in tflite_eligible}
-            tflite_best_key = min(tflite_eligible, key=lambda k: tflite_eligible[k]["size_kb"])
-            tflite_best     = tflite_modes[tflite_best_key]
-            logger.info(
-                "[%s] TFLite best: %s  (%.1f KB, acc=%.4f, drop=%.4f)",
-                model_name, tflite_best_key, tflite_best["size_kb"],
-                tflite_best["accuracy"], tflite_ref_acc - tflite_best["accuracy"],
-            )
-
-    # ── 6. Build report ───────────────────────────────────────────────────
+    # ── 5. Build report ───────────────────────────────────────────────────
     onnx_benchmark_results = {
         k: {
             "size_kb":    v["size_kb"],
@@ -304,19 +226,6 @@ def _optimize_one(
         }
         for k, v in modes.items()
     }
-    tflite_benchmark_results = (
-        {
-            k: {
-                "size_kb":    v["size_kb"],
-                "accuracy":   v["accuracy"],
-                "latency_ms": v["latency_ms"],
-                "path":       v["path"].name,
-            }
-            for k, v in tflite_modes.items()
-        }
-        if tflite_modes else None
-    )
-
     report = {
         "run_id":                 run_id,
         "run_name":               run_name,
@@ -325,9 +234,8 @@ def _optimize_one(
         "class_filter":           candidate.get("class_filter"),
         "feature_params":         candidate.get("feature_params"),
         "original_size_kb":            original_size_kb,
-        "val_accuracy_original_train": val_acc_orig_train,  # training-time metric (different split)
-        "val_accuracy_original":       val_acc_orig,        # original model on eval set via fp32 ONNX
-        # ── ONNX results (used by Stage 5c) ──────────────────────────────
+        "val_accuracy_original_train": val_acc_orig_train,
+        "val_accuracy_original":       val_acc_orig,
         "benchmark_results":      onnx_benchmark_results,
         "optimized_model_path":   str(best["path"]),
         "optimized_size_kb":      best["size_kb"],
@@ -337,12 +245,6 @@ def _optimize_one(
         "val_accuracy_optimized": best["accuracy"],
         "accuracy_drop":          round(reference_acc - best["accuracy"], 6),
         "latency_ms":             best["latency_ms"],
-        # ── TFLite results (Keras only, None for sklearn) ─────────────────
-        "tflite_results":         tflite_benchmark_results,
-        "tflite_best_mode":       tflite_best_key,
-        "tflite_optimized_size_kb":  tflite_best["size_kb"]  if tflite_best else None,
-        "tflite_val_accuracy":       tflite_best["accuracy"] if tflite_best else None,
-        "tflite_latency_ms":         tflite_best["latency_ms"] if tflite_best else None,
         "timestamp":              datetime.now().isoformat(timespec="seconds"),
     }
 
@@ -359,7 +261,6 @@ def _optimize_one(
                 "model":                       model_name,
                 "original_run_id":             run_id,
                 "onnx_best_mode":              best_key,
-                "tflite_best_mode":            tflite_best_key or "n/a",
                 "max_accuracy_drop_threshold": max_accuracy_drop,
             })
             # Original model
@@ -382,26 +283,6 @@ def _optimize_one(
             mlflow_module.log_metric("onnx_best_latency_ms",       best["latency_ms"])
             mlflow_module.log_metric("onnx_best_accuracy_drop",    reference_acc - best["accuracy"])
             mlflow_module.log_metric("onnx_best_compression_ratio", original_size_kb / best["size_kb"])
-
-            # All TFLite modes (Keras only)
-            if tflite_modes:
-                tflite_ref = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
-                for mode_key, mv in tflite_modes.items():
-                    prefix = f"onnx_{mode_key}"  # keep onnx_ prefix for consistent UI grouping
-                    mlflow_module.log_metric(f"{prefix}_size_kb",          mv["size_kb"])
-                    mlflow_module.log_metric(f"{prefix}_val_accuracy",     mv["accuracy"])
-                    mlflow_module.log_metric(f"{prefix}_latency_ms",       mv["latency_ms"])
-                    mlflow_module.log_metric(f"{prefix}_accuracy_drop",    tflite_ref - mv["accuracy"])
-                    mlflow_module.log_metric(f"{prefix}_compression_ratio", original_size_kb / mv["size_kb"])
-
-            # Summary: best TFLite selection
-            if tflite_best:
-                tflite_ref = tflite_modes.get("tflite_fp32", {}).get("accuracy", reference_acc)
-                mlflow_module.log_metric("tflite_best_size_kb",          tflite_best["size_kb"])
-                mlflow_module.log_metric("tflite_best_val_accuracy",     tflite_best["accuracy"])
-                mlflow_module.log_metric("tflite_best_latency_ms",       tflite_best["latency_ms"])
-                mlflow_module.log_metric("tflite_best_accuracy_drop",    tflite_ref - tflite_best["accuracy"])
-                mlflow_module.log_metric("tflite_best_compression_ratio", original_size_kb / tflite_best["size_kb"])
 
             mlflow_module.log_artifact(str(best["path"]))
             mlflow_module.log_artifact(str(report_path))
@@ -672,31 +553,23 @@ def main(argv=None) -> None:
         sys.exit(1)
 
     # ── Summary table ─────────────────────────────────────────────────────
-    sep = "─" * 140
+    sep = "─" * 90
     logger.info(sep)
     logger.info(
-        "  %-40s  %8s  │  %10s  %14s  %8s  %10s  │  %10s  %14s  %10s",
-        "run", "orig_kb",
-        "onnx_kb", "onnx_method", "acc_drop", "lat_ms",
-        "tflite_kb", "tflite_method", "lat_ms",
+        "  %-40s  %8s  │  %10s  %14s  %8s  %10s",
+        "run", "orig_kb", "onnx_kb", "method", "acc_drop", "lat_ms",
     )
     logger.info(sep)
     for r in sorted(reports, key=lambda x: x["optimized_size_kb"]):
-        tflite_kb     = r.get("tflite_optimized_size_kb")
-        tflite_method = r.get("tflite_best_mode") or "n/a"
-        tflite_lat    = r.get("tflite_latency_ms")
         label = r.get("run_name") or r["model_name"]
         logger.info(
-            "  %-40s  %8.1f  │  %10.1f  %14s  %8.4f  %10.3f  │  %10s  %14s  %10s",
+            "  %-40s  %8.1f  │  %10.1f  %14s  %8.4f  %10.3f",
             label,
             r["original_size_kb"],
             r["optimized_size_kb"],
             r["quantization_method"],
             r["accuracy_drop"],
             r["latency_ms"],
-            f"{tflite_kb:.1f}"  if tflite_kb  is not None else "n/a",
-            tflite_method,
-            f"{tflite_lat:.3f}" if tflite_lat is not None else "n/a",
         )
     logger.info(sep)
     logger.info(

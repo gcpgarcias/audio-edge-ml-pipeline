@@ -12,8 +12,25 @@
 # ── Shared defaults ──────────────────────────────────────────────────────────
 
 output_dir:  data/models/tuned
-experiment:  fsc22-device-27-classes-augmented-tuning
+experiment:  fsc22-device-16-classes-augmented-tuning
 mlflow_uri:  mlruns/
+class_filter:
+  - Axe
+  - BirdChirping
+  - Chainsaw
+  - Clapping
+  - Fire
+  - Firework
+  - Footsteps
+  - Frog
+  - Gunshot
+  - Handsaw
+  - Silence
+  - Thunderstorm
+  - TreeFalling
+  - Whistling
+  - Wind
+  - WolfHowl
   
 # features_test: data/processed/fsc22_melspec_val_2
 
@@ -125,19 +142,19 @@ runs:
   #     learning_rate: {type: loguniform,  low: 0.00005, high: 0.01}
 
   - model:          cnn
-    name:           fsc22_device_27_classes_augmented_cnn_sweep
+    name:           fsc22_device_16_classes_augmented_cnn_sweep
     features_dir:   data/processed/fsc22_device_augmented_melspec_train
     features_test:  data/processed/fsc22_device_melspec_val
     params:
       first_stride: 4     # strided first conv
       second_stride: 2    # strided second conv — keeps peak arena ~157 KB, fits 512 KB AXI SRAM
     search_space:
-      filters:       {type: categorical, choices: [32]}
-      n_blocks:      {type: categorical, choices: [3]}
+      filters:       {type: categorical, choices: [32, 64]}   # 64 now viable with more data
+      n_blocks:      {type: categorical, choices: [2, 3]}
       dropout:       {type: float,       low: 0.1,     high: 0.4}
-      batch_size:    {type: categorical, choices: [64]}   # larger batches with larger dataset
+      batch_size:    {type: categorical, choices: [32, 64]}   # larger batches with larger dataset
       learning_rate: {type: loguniform,  low: 0.0005,  high: 0.005}
-      kernel_size:   {type: categorical, choices: [3]}
+      kernel_size:   {type: categorical, choices: [3, 5]}
       l2_reg:        {type: loguniform,  low: 0.000001, high: 0.001}  # less regularisation needed
   
   # - model:        cnn

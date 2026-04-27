@@ -124,14 +124,24 @@ class AudioFolderLoader(BaseDatasetLoader):
         in this order.  Unknown classes are silently skipped.  When *None*,
         all subdirectories are treated as class folders (sorted
         alphabetically for reproducibility).
+    manifest:
+        Path to a ``split_manifest.json`` produced by
+        ``tools/generate_split.py``.  When provided together with
+        *manifest_split* (``"train"``, ``"val"``, or ``"test"``), only the
+        files listed in that split are loaded — preventing test-set leakage.
+    manifest_split:
+        Which split to load from the manifest (``"train"``, ``"val"``, or
+        ``"test"``).  Required when *manifest* is given.
     """
 
     def __init__(
         self,
-        root:        Path | str,
-        split:       Optional[str]       = None,
-        extensions:  Optional[set[str]]  = None,
-        class_names: Optional[list[str]] = None,
+        root:           Path | str,
+        split:          Optional[str]       = None,
+        extensions:     Optional[set[str]]  = None,
+        class_names:    Optional[list[str]] = None,
+        manifest:       Optional[Path | str] = None,
+        manifest_split: Optional[str]       = None,
     ) -> None:
         effective_root = Path(root) / split if split else Path(root)
         if not effective_root.is_dir():
@@ -174,6 +184,23 @@ class AudioFolderLoader(BaseDatasetLoader):
                     **_audio_meta(clip_path),
                 }
                 self._samples.append((clip_path, label, meta))
+
+        # Filter by split manifest when provided
+        if manifest is not None:
+            import json
+            if manifest_split is None:
+                raise ValueError("manifest_split must be set when manifest is given")
+            manifest_data = json.loads(Path(manifest).read_text())
+            allowed = set(manifest_data.get(manifest_split, []))
+            root_for_rel = Path(root)
+            self._samples = [
+                (p, lbl, meta) for p, lbl, meta in self._samples
+                if str(p.relative_to(root_for_rel)) in allowed
+            ]
+            logger.info(
+                "AudioFolderLoader: manifest filter '%s' → %d clips.",
+                manifest_split, len(self._samples),
+            )
 
         logger.info(
             "AudioFolderLoader: %d clips across %d classes.",

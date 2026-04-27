@@ -1,15 +1,27 @@
 """
-tools/generate_split.py — generate a reproducible train/val/test split manifest
-for a class-per-subfolder device recording directory.
+tools/generate_split.py — generate a reproducible train/val/test split manifest.
+
+Supports two dataset layouts:
+
+  class-per-subfolder (default):
+      <root>/<ClassName>/<file.wav>
+      Used by: fsc22_device, any AudioFolderLoader dataset.
+
+  fsc22 flat+CSV (--loader fsc22):
+      <root>/Audio Wise V1.0-*/<file.wav>
+      <root>/Metadata-*/Metadata/*.csv
+      Relative paths in the manifest use <ClassName>/<file.wav> format so
+      the manifest is compatible with record_dataset.py and AudioFolderLoader.
 
 The manifest (split_manifest.json) is written into the dataset root and should
-be committed to git.  This freezes splits across sessions: existing file
-assignments never change when new recordings are added.
+be committed to git.  This freezes splits across sessions.
 
 Usage
 -----
     python tools/generate_split.py --input data/raw/fsc22_device
-    python tools/generate_split.py --input data/raw/fsc22_device --train 0.70 --val 0.15 --test 0.15
+    python tools/generate_split.py --input data/raw/fsc22 --loader fsc22
+    python tools/generate_split.py --input data/raw/fsc22 --loader fsc22 \\
+        --seed 42 --train 0.70 --val 0.15 --test 0.15
 
 Re-running is safe: the script warns if any previously-assigned file would move
 to a different split, and exits without writing unless --force is given.
@@ -28,7 +40,7 @@ AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".aiff"}
 
 
 def collect_files(root: Path) -> dict[str, list[str]]:
-    """Return {class_name: [relative_path, ...]} sorted deterministically."""
+    """Return {class_name: [relative_path, ...]} for class-per-subfolder layout."""
     by_class: dict[str, list[str]] = defaultdict(list)
     for class_dir in sorted(root.iterdir()):
         if not class_dir.is_dir() or class_dir.name.startswith("."):
@@ -36,6 +48,46 @@ def collect_files(root: Path) -> dict[str, list[str]]:
         for f in sorted(class_dir.iterdir()):
             if f.suffix.lower() in AUDIO_EXTS:
                 by_class[class_dir.name].append(f"{class_dir.name}/{f.name}")
+    return dict(by_class)
+
+
+def collect_files_fsc22(root: Path) -> dict[str, list[str]]:
+    """Return {class_name: [ClassName/filename, ...]} for the fsc22 flat+CSV layout.
+
+    Relative paths use ClassName/filename.wav format so the manifest is
+    compatible with record_dataset.py's resolve_candidates() and AudioFolderLoader.
+    """
+    import csv
+
+    # Find the metadata CSV
+    csv_files = list(root.rglob("*.csv"))
+    if not csv_files:
+        raise FileNotFoundError(f"No metadata CSV found under {root}")
+    csv_path = csv_files[0]
+
+    # Find the flat audio directory
+    audio_dirs = [
+        p for p in root.rglob("*")
+        if p.is_dir() and any(f.suffix.lower() == ".wav" for f in p.iterdir() if f.is_file())
+    ]
+    if not audio_dirs:
+        raise FileNotFoundError(f"No audio directory found under {root}")
+    audio_dir = audio_dirs[0]
+
+    by_class: dict[str, list[str]] = defaultdict(list)
+    with csv_path.open(newline="", encoding="utf-8-sig") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            class_name   = row.get("Class Name", "").strip()
+            dataset_fname = row.get("Dataset File Name", "").strip()
+            if not class_name or not dataset_fname:
+                continue
+            path = audio_dir / dataset_fname
+            if path.exists():
+                by_class[class_name].append(f"{class_name}/{dataset_fname}")
+
+    print(f"  CSV: {csv_path.name}")
+    print(f"  Audio dir: {audio_dir.relative_to(root)}")
     return dict(by_class)
 
 
@@ -70,7 +122,11 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--input",  required=True,
-                    help="Root of the device recording directory")
+                    help="Root of the dataset directory")
+    ap.add_argument("--loader", default="audio_folder",
+                    choices=["audio_folder", "fsc22"],
+                    help="Dataset layout: audio_folder (class-per-subfolder, default) "
+                         "or fsc22 (flat audio + metadata CSV)")
     ap.add_argument("--train",  type=float, default=0.70)
     ap.add_argument("--val",    type=float, default=0.15)
     ap.add_argument("--test",   type=float, default=0.15)
@@ -89,7 +145,10 @@ def main() -> None:
         print(f"ERROR: train+val+test must sum to 1.0 (got {frac_sum:.3f})")
         raise SystemExit(1)
 
-    by_class = collect_files(root)
+    if args.loader == "fsc22":
+        by_class = collect_files_fsc22(root)
+    else:
+        by_class = collect_files(root)
     if not by_class:
         print("ERROR: no audio files found.")
         raise SystemExit(1)

@@ -110,7 +110,7 @@ class ExperimentConfig:
     loader:       str
     name:         Optional[str] = None
     dataset:      Optional[str] = None
-    split:        str           = "train"
+    split:        Optional[str] = None
     output:       Optional[str] = None
     max_samples:  Optional[int] = None
     label_col:    Optional[str] = None
@@ -122,6 +122,8 @@ class ExperimentConfig:
     extractor_params: dict         = field(default_factory=dict)
     class_filter:    Optional[list[str]]       = None
     label_map:       Optional[dict[str, str]]  = None
+    manifest:        Optional[str]             = None
+    manifest_split:  Optional[str]             = None
 
     def resolved_name(self) -> str:
         """Return *name* or auto-generate one from loader/extractor/split."""
@@ -191,6 +193,8 @@ class PipelineConfig:
     extractor_params: dict         = field(default_factory=dict)
     class_filter:    Optional[list[str]]       = None
     label_map:       Optional[dict[str, str]]  = None
+    manifest:        Optional[str]             = None
+    manifest_split:  Optional[str]             = None
     experiments:     list[ExperimentConfig] = field(default_factory=list)
 
     def resolved_experiments(self) -> list[ExperimentConfig]:
@@ -240,7 +244,7 @@ class PipelineConfig:
                 loader=exp.loader or self.loader or "",
                 name=exp.name,
                 dataset=exp.dataset or self.dataset,
-                split=exp.split or self.split,
+                split=exp.split if exp.split is not None else self.split,
                 output=exp.output or self.output,
                 max_samples=exp.max_samples if exp.max_samples is not None else self.max_samples,
                 label_col=exp.label_col or self.label_col,
@@ -252,6 +256,8 @@ class PipelineConfig:
                 extractor_params=exp.extractor_params if exp.extractor_params else self.extractor_params,
                 class_filter=exp.class_filter if exp.class_filter is not None else self.class_filter,
                 label_map=exp.label_map if exp.label_map is not None else self.label_map,
+                manifest=exp.manifest or self.manifest,
+                manifest_split=exp.manifest_split or self.manifest_split,
             )
             if not merged.extractor:
                 raise ValueError(

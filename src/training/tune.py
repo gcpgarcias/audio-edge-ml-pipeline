@@ -416,11 +416,11 @@ def _sample_optuna_params(trial, search_space: dict) -> dict:
                 params[key] = _suggest_categorical(key, spec["choices"])
             elif kind in ("float", "uniform"):
                 params[key] = trial.suggest_float(
-                    key, spec["low"], spec["high"], step=spec.get("step")
+                    key, float(spec["low"]), float(spec["high"]), step=spec.get("step")
                 )
             elif kind == "loguniform":
                 params[key] = trial.suggest_float(
-                    key, spec["low"], spec["high"], log=True
+                    key, float(spec["low"]), float(spec["high"]), log=True
                 )
             elif kind == "int":
                 params[key] = trial.suggest_int(

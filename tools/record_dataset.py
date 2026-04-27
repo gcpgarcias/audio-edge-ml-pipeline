@@ -182,14 +182,14 @@ def play_audio_start(y: np.ndarray, sr: int) -> None:
 
 def stop_audio(_proc=None) -> None:
     global _play_thread
-    try:
-        import sounddevice as sd
-        sd.stop()
-    except Exception:
-        pass
-    if _play_thread is not None:
+    if _play_thread is not None and _play_thread.is_alive():
+        try:
+            import sounddevice as sd
+            sd.stop()
+        except Exception:
+            pass
         _play_thread.join(timeout=1.0)
-        _play_thread = None
+    _play_thread = None
 
 
 def resolve_candidates(source_dir: Path, class_name: str) -> list[Path]:
@@ -324,7 +324,7 @@ def main() -> None:
             clip_audio = None
             if playback_mode:
                 clip_path = clip_queue[captured]
-                clip_audio = load_and_loop(clip_path, LEAD_IN_S + DURATION_S)
+                clip_audio = load_and_loop(clip_path, DURATION_S)
                 print(f"  Source: {clip_path.name}")
 
             # Flush stale serial data before waiting (guards against previous timeout)
@@ -337,22 +337,21 @@ def main() -> None:
 
             audio_proc = None
             if playback_mode:
-                # Play BEFORE triggering: audio must already be coming out of
-                # speakers when the device starts recording.  LEAD_IN_S covers
-                # afplay startup latency.
+                # Trigger first so device warmup (~32 ms) overlaps with CoreAudio
+                # startup (~10 ms after warmup_audio).  Audio starts immediately
+                # after the trigger — both begin within ~50 ms of each other.
+                ser.write(b'R')
+                ser.flush()
+                print(f"  Triggered — device recording {DURATION_S:.0f}s ...")
                 audio_proc = play_audio_start(clip_audio, SAMPLE_RATE)
-                print(f"  Audio playing — waiting {LEAD_IN_S:.1f}s for pipeline to warm up ...")
-                time.sleep(LEAD_IN_S)
             else:
                 print(f"  Get ready to make the sound '{class_name}' ...")
                 for i in (3, 2, 1):
                     print(f"  {i}...")
                     time.sleep(1.0)
-
-            # Trigger recording now that audio is definitely playing
-            ser.write(b'R')
-            ser.flush()
-            print(f"  Triggered — device recording {DURATION_S:.0f}s ...")
+                ser.write(b'R')
+                ser.flush()
+                print(f"  Triggered — device recording {DURATION_S:.0f}s ...")
 
             # Receive PCM from device
             pcm_bytes = recv_pcm(ser)

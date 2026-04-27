@@ -308,7 +308,9 @@ def _build_loader(
     image_folder:   Optional[str]       = None,
     text_folder:    Optional[str]       = None,
     video_folder:   Optional[str]       = None,
-    class_filter: Optional[list[str]] = None,
+    class_filter:   Optional[list[str]] = None,
+    manifest:       Optional[str]       = None,
+    manifest_split: Optional[str]       = None,
 ) -> BaseDatasetLoader:
     """Instantiate the requested loader with the given parameters.
 
@@ -351,7 +353,11 @@ def _build_loader(
         return FSC22Loader(dataset, split=split, class_filter=cf)
     elif loader_name == "audio_folder":
         root = audio_folder or dataset
-        return AudioFolderLoader(root, split=split)
+        # When a manifest is provided it handles split filtering; don't apply
+        # a split subdirectory on top of it.
+        folder_split = None if (manifest or not split) else split
+        return AudioFolderLoader(root, split=folder_split,
+                                 manifest=manifest, manifest_split=manifest_split)
     elif loader_name == "image_folder":
         root = image_folder or dataset
         return ImageFolderLoader(root, split=split)
@@ -512,6 +518,8 @@ def _run_experiment(exp, config_path: Optional[Path] = None) -> None:
         text_folder=exp.text_folder,
         video_folder=exp.video_folder,
         class_filter=exp.class_filter,
+        manifest=exp.manifest,
+        manifest_split=exp.manifest_split,
     )
     extractor  = get(exp.extractor)(**exp.extractor_params)
     output_dir = Path(exp.resolved_output())

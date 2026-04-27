@@ -345,26 +345,22 @@ void audio_record(int16_t *buf, int n_samples);
 _AUDIO_CPP_PDM_STM32 = """
 #include "audio.h"
 #include <PDM.h>
+#include <Arduino.h>
 
 static volatile int16_t *_pdm_buf  = NULL;
 static volatile int      _pdm_pos  = 0;
 static volatile bool     _pdm_done = false;
 static volatile int      _pdm_n    = 0;
-
-static int16_t _drain[64];
+static volatile int      _pdm_cb_count = 0;
 
 static void _pdm_cb() {{
+    _pdm_cb_count++;
+    /* Guard: do nothing while idle.  Prevents PDM.read(NULL,0) and the
+       _pdm_pos(0) >= _pdm_n(0) false-done bug.
+       The PDM library ring buffer handles overflow gracefully during idle;
+       the warmup phase in audio_record() discards any stale data.        */
+    if (_pdm_buf == NULL || _pdm_n == 0 || _pdm_done) return;
     int available = PDM.available();
-    if (_pdm_buf == NULL || _pdm_n == 0) {{
-        while (available >= 2) {{
-            int n = available / 2;
-            if (n > 64) n = 64;
-            PDM.read(_drain, n * 2);
-            available -= n * 2;
-        }}
-        return;
-    }}
-    if (_pdm_done) return;
     while (available > 0) {{
         int n = available / 2;
         if (_pdm_pos + n > _pdm_n) n = _pdm_n - _pdm_pos;
@@ -381,22 +377,38 @@ void audio_init() {{
     PDM.setGain(12);
 }}
 
-#define AUDIO_WARMUP_SAMPLES 4096
+/* Discard this many samples at the start of every recording to flush the
+   PDM FIFO settling transient.  512 = ~32 ms at 16 kHz.                 */
+#define AUDIO_WARMUP_SAMPLES 512
 
 static int16_t _warmup_buf[AUDIO_WARMUP_SAMPLES];
 
 void audio_record(int16_t *buf, int n_samples) {{
+    _pdm_cb_count = 0;
     _pdm_buf  = _warmup_buf;
     _pdm_pos  = 0;
     _pdm_n    = AUDIO_WARMUP_SAMPLES;
     _pdm_done = false;
-    while (!_pdm_done) {{ /* spin */ }}
+    uint32_t t0 = millis();
+    while (!_pdm_done) {{
+        if (millis() - t0 > 2000) {{
+            Serial.print("Warmup cb="); Serial.println(_pdm_cb_count);
+            t0 = millis();
+        }}
+    }}
 
+    _pdm_cb_count = 0;
     _pdm_buf  = buf;
     _pdm_pos  = 0;
     _pdm_n    = n_samples;
     _pdm_done = false;
-    while (!_pdm_done) {{ /* spin */ }}
+    t0 = millis();
+    while (!_pdm_done) {{
+        if (millis() - t0 > 2000) {{
+            Serial.print("Recording cb="); Serial.println(_pdm_cb_count);
+            t0 = millis();
+        }}
+    }}
 
     _pdm_buf = NULL;
     _pdm_n   = 0;
@@ -665,6 +677,14 @@ static const char *labels[MODEL_N_CLASSES] = {{ {label_list} }};
    removal and notch filter).  Use tools/receive_wav.py to save as .wav. */
 #define PCM_DUMP_MODE 0
 
+/* Set EVAL_MODE to 1 to enable host-triggered inference with structured output.
+   The device waits for 'R' before each recording, then prints:
+     PRED <class_name> <top_score>
+     SCORES <c0> <s0> <c1> <s1> ... (all classes)
+     EVAL_DONE
+   Use tools/evaluate_device.py to run the test split and log to MLflow. */
+#define EVAL_MODE 0
+
 void setup() {{
     Serial.begin(115200);
     delay(2000);   // give host time to open monitor; don't block on !Serial
@@ -686,11 +706,9 @@ void loop() {{
         Serial.println(" bytes");
     }}
 
-#if PCM_DUMP_MODE
-    /* Wait for 'R' trigger from host before recording.
-       tools/record_dataset.py sends 'R', then immediately starts audio playback.
-       The device starts capturing at the same moment — no manual sync needed. */
-    do {{ Serial.println("READY"); delay(200); }} while (!Serial.available());
+#if PCM_DUMP_MODE || EVAL_MODE
+    /* Wait for 'R' trigger from host before recording. */
+    do {{ Serial.println("READY"); delay(20); }} while (!Serial.available());
     if (Serial.read() != 'R') return;   // unexpected byte — skip this cycle
 #endif
 
@@ -790,6 +808,17 @@ void loop() {{
         Serial.print(". "); Serial.print(labels[top[t]]);
         Serial.print(": score="); Serial.println(scores[top[t]], 3);
     }}
+
+#if EVAL_MODE
+    /* Structured output parsed by tools/evaluate_device.py */
+    Serial.print("PRED "); Serial.print(labels[cls]); Serial.print(" "); Serial.println(scores[cls], 4);
+    Serial.print("SCORES");
+    for (int i = 0; i < MODEL_N_CLASSES; i++) {{
+        Serial.print(" "); Serial.print(labels[i]); Serial.print(" "); Serial.print(scores[i], 4);
+    }}
+    Serial.println();
+    Serial.println("EVAL_DONE");
+#endif
 
     delay(500);
 #endif

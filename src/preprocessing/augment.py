@@ -259,7 +259,11 @@ def _iter_fsc22(cfg: dict):
 
 
 def _iter_audio_folder(cfg: dict):
-    """Yield (audio_path, class_name) for a class-per-subfolder directory."""
+    """Yield (audio_path, class_name) for a class-per-subfolder directory.
+
+    When *manifest* and *split* are set in cfg, only files listed in that
+    manifest split are yielded — preventing val/test leakage into augmentation.
+    """
     audio_folder = cfg.get("audio_folder") or cfg.get("dataset")
     if not audio_folder:
         raise ValueError(
@@ -267,12 +271,28 @@ def _iter_audio_folder(cfg: dict):
         )
     root = Path(audio_folder)
     extensions = {".wav", ".flac", ".mp3", ".ogg", ".aiff"}
+
+    # Build allowed-file set from manifest if provided
+    allowed = None
+    manifest_path = cfg.get("manifest")
+    manifest_split = cfg.get("split", "train")
+    if manifest_path:
+        import json
+        manifest = json.loads(Path(manifest_path).read_text())
+        allowed = set(manifest.get(manifest_split, []))
+        print(f"[augment] manifest filter '{manifest_split}': {len(allowed)} files allowed")
+
     for class_dir in sorted(root.iterdir()):
         if not class_dir.is_dir():
             continue
         for f in sorted(class_dir.iterdir()):
-            if f.suffix.lower() in extensions:
-                yield f, class_dir.name
+            if f.suffix.lower() not in extensions:
+                continue
+            if allowed is not None:
+                rel = f"{class_dir.name}/{f.name}"
+                if rel not in allowed:
+                    continue
+            yield f, class_dir.name
 
 
 _LOADERS = {

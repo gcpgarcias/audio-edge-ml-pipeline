@@ -1,8 +1,9 @@
-data/
 *.pyc
 __pycache__/
 .DS_Store
 .env
+data/
+!data/raw/fsc22_device/split_manifest.json
 deploy/
 mlflow/
 mlruns/

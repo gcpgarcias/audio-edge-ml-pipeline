@@ -64,6 +64,17 @@ cd deploy/nicla_cnn && pio run --target upload && \
   pio device monitor
 ```
 
+### Device tools (`tools/`)
+
+| Script | Purpose |
+| --- | --- |
+| `generate_split.py --input <dir>` | Stratified train/val/test manifest |
+| `record_dataset.py --class <label>` | Record labelled audio from Nicla over serial |
+| `receive_wav.py` | Receive raw PCM over serial → `.wav` |
+| `receive_mel.py --features <dir>` | Receive mel spectrogram, compare to training samples |
+| `evaluate_device.py --manifest <path>` | Evaluate flashed model on test split, log to MLflow |
+| `gen_prototypes.py --features <dir> --classes ...` | Per-class mean spectrogram as `uint8` C arrays |
+
 ### Critical architecture constraints (Nicla Vision / STM32H747)
 
 - **Use fp32 ONNX** — static int8 has same arena size but more codegen complexity.
@@ -173,3 +184,14 @@ data/models/tuned/shortlist_<experiment>.json     post-tune (from tune.py)
 - Apple Silicon: `tensorflow-metal` is in `requirements.txt`.
 - Do **not** commit `.npy` / `.json` processed data — large and reproducible.
 - Serial port for Nicla Vision: `/dev/cu.usbmodem11201` (may increment after each flash).
+
+---
+
+## Hardware — Nicla Vision
+
+- **MCU**: STM32H747XIH6 dual-core (Cortex-M7 @ 480 MHz + Cortex-M4 @ 240 MHz)
+- **M7 RAM**: 512 KB AXI SRAM (`0x24000000`) — mbed takes ~330 KB BSS → ~180 KB free
+- **M4 RAM**: ~288 KB (SRAM1 + SRAM2 + SRAM3 via AHB bus)
+- **Flash**: 768 KB usable (M7) / 1 MB (M4) from dual 1 MB banks
+- **External flash**: 16 MB QSPI NOR (AT25SF128A) — available for model or file storage
+- **Microphone**: MP34DT06JTR — PDM MEMS, omnidirectional, SNR 64 dB, AOP 122.5 dB SPL, 20 Hz–10 kHz
